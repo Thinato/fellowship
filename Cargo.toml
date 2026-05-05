@@ -1,0 +1,25 @@
+[package]
+name = "fellowship"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "fellowship"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+portable-pty = "0.8"
+vt100 = "0.15"
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "fs", "process"] }
+anyhow = "1.0.102"
+thiserror = "2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+notify = "6"
+tui-input = "0.10"
+futures = "0.3"
+
+[profile.release]
+lto = "thin"
