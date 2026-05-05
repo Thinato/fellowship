@@ -117,6 +117,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  Ctrl+a ?         Toggle help"),
         Line::from("  Ctrl+a Ctrl+a    Send literal ^A to PTY"),
         Line::from("  Ctrl+a Esc       Cancel prefix"),
+        Line::from("  Ctrl+a 1..9      Switch worktree by index"),
         Line::from(""),
         Line::from("  j/k   Navigate list panes"),
         Line::from("  n     New worktree (Workspaces)"),

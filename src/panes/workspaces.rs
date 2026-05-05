@@ -45,6 +45,13 @@ impl WorkspacesPane {
         self.list_state.select(Some(self.selected));
     }
 
+    pub fn select_path(&mut self, path: &std::path::Path) {
+        if let Some(idx) = self.worktrees.iter().position(|w| w.path == path) {
+            self.selected = idx;
+            self.list_state.select(Some(idx));
+        }
+    }
+
     pub fn move_down(&mut self) {
         if !self.worktrees.is_empty() {
             self.selected = (self.selected + 1).min(self.worktrees.len() - 1);

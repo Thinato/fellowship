@@ -7,6 +7,7 @@ use crate::app::PaneId;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     FocusPane(PaneId),
+    SwitchWorktree(usize),
     Quit,
     ToggleHelp,
     SendLiteralPrefix,
@@ -77,6 +78,13 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
         KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         Action::SendLiteralPrefix,
     );
+    for n in 1..=9u8 {
+        let c = char::from(b'0' + n);
+        map.insert(
+            KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+            Action::SwitchWorktree((n - 1) as usize),
+        );
+    }
     map
 }
 
@@ -156,6 +164,20 @@ mod tests {
         km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         let a = km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         assert_eq!(a, Action::SendLiteralPrefix);
+    }
+
+    #[test]
+    fn prefix_then_digit_switches_worktree() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('1'), PaneId::Terminal);
+        assert_eq!(a, Action::SwitchWorktree(0));
+
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('9'), PaneId::Terminal);
+        assert_eq!(a, Action::SwitchWorktree(8));
     }
 
     #[test]

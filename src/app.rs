@@ -70,6 +70,12 @@ impl App {
             Action::FocusPane(pane) => {
                 self.focus = pane;
             }
+            Action::SwitchWorktree(idx) => {
+                if let Some(wt) = self.workspaces.worktrees.get(idx) {
+                    let path = wt.path.clone();
+                    let _ = self.event_tx.send(Event::SwitchWorkspace(path));
+                }
+            }
             Action::Quit => {
                 self.should_quit = true;
             }
@@ -125,6 +131,7 @@ impl App {
             Event::SwitchWorkspace(path) => {
                 self.active_path = path.clone();
                 self.git_status.root_path = path.clone();
+                self.workspaces.select_path(&path);
                 let (rows, cols) = self.last_term_size;
                 if !self.terminals.contains_key(&path) {
                     let pane = TerminalPane::spawn(rows, cols, &path, self.event_tx.clone())?;
