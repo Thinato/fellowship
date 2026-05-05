@@ -4,9 +4,18 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PaneId;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     FocusPane(PaneId),
+    FocusDir(Dir),
     SwitchWorktree(usize),
     Quit,
     ToggleHelp,
@@ -77,6 +86,22 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
     map.insert(
         KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         Action::SendLiteralPrefix,
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+        Action::FocusDir(Dir::Left),
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+        Action::FocusDir(Dir::Down),
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+        Action::FocusDir(Dir::Up),
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+        Action::FocusDir(Dir::Right),
     );
     for n in 1..=9u8 {
         let c = char::from(b'0' + n);
@@ -206,6 +231,42 @@ mod tests {
         let a = km.handle(&mut mode, char_key('z'), PaneId::Terminal);
         assert_eq!(a, Action::Consume);
         assert!(matches!(mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn prefix_then_h_focuses_dir_left() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('h'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusDir(Dir::Left));
+    }
+
+    #[test]
+    fn prefix_then_j_focuses_dir_down() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('j'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusDir(Dir::Down));
+    }
+
+    #[test]
+    fn prefix_then_k_focuses_dir_up() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('k'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusDir(Dir::Up));
+    }
+
+    #[test]
+    fn prefix_then_l_focuses_dir_right() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('l'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusDir(Dir::Right));
     }
 
     #[test]

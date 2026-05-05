@@ -4,6 +4,7 @@ mod event;
 mod gh;
 mod git;
 mod keymap;
+mod layout;
 mod panes;
 mod ui;
 

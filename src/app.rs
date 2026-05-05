@@ -9,6 +9,7 @@ use crate::event::Event;
 use crate::gh;
 use crate::git;
 use crate::keymap::{Action, InputMode, Keymap, default_bindings};
+use crate::layout::PaneLayout;
 use crate::panes::gitstatus::GitStatusPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
@@ -31,6 +32,7 @@ pub struct App {
     pub active_path: PathBuf,
     pub last_term_size: (u16, u16),
     pub event_tx: mpsc::UnboundedSender<Event>,
+    pub layout: PaneLayout,
     keymap: Keymap,
 }
 
@@ -54,6 +56,7 @@ impl App {
             active_path: root_path,
             last_term_size,
             event_tx,
+            layout: PaneLayout::default_horizontal(),
             keymap: Keymap::new(default_bindings()),
         }
     }
@@ -69,6 +72,11 @@ impl App {
         match action {
             Action::FocusPane(pane) => {
                 self.focus = pane;
+            }
+            Action::FocusDir(dir) => {
+                if let Some(target) = self.layout.neighbor(self.focus, dir) {
+                    self.focus = target;
+                }
             }
             Action::SwitchWorktree(idx) => {
                 if let Some(wt) = self.workspaces.worktrees.get(idx) {

@@ -98,7 +98,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_width = 52u16;
-    let help_height = 14u16;
+    let help_height = 15u16;
     let x = area.x + area.width.saturating_sub(help_width) / 2;
     let y = area.y + area.height.saturating_sub(help_height) / 2;
     let popup_area = Rect::new(
@@ -118,6 +118,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  Ctrl+a Ctrl+a    Send literal ^A to PTY"),
         Line::from("  Ctrl+a Esc       Cancel prefix"),
         Line::from("  Ctrl+a 1..9      Switch worktree by index"),
+        Line::from("  Ctrl+a h/j/k/l   Focus left/down/up/right pane"),
         Line::from(""),
         Line::from("  j/k   Navigate list panes"),
         Line::from("  n     New worktree (Workspaces)"),
