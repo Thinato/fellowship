@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::{
     Frame,
@@ -7,6 +6,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
 };
+use std::path::PathBuf;
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
@@ -136,16 +136,20 @@ impl WorkspacesPane {
                     self.open_modal();
                     None
                 }
-                (KeyCode::Enter, _) => {
-                    self.selected_worktree().map(|wt| Event::SwitchWorkspace(wt.path.clone()))
-                }
+                (KeyCode::Enter, _) => self
+                    .selected_worktree()
+                    .map(|wt| Event::SwitchWorkspace(wt.path.clone())),
                 _ => None,
             }
         }
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
-        let border_color = if focused { Color::Cyan } else { Color::DarkGray };
+        let border_color = if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
         let title_style = if focused {
             Style::default()
                 .fg(Color::White)
