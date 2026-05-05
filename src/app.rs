@@ -132,6 +132,7 @@ impl App {
                 self.active_path = path.clone();
                 self.git_status.root_path = path.clone();
                 self.workspaces.select_path(&path);
+                self.focus = PaneId::Terminal;
                 let (rows, cols) = self.last_term_size;
                 if !self.terminals.contains_key(&path) {
                     let pane = TerminalPane::spawn(rows, cols, &path, self.event_tx.clone())?;
