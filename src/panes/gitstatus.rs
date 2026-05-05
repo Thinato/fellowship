@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use crate::gh::PrInfo;
+use crate::git::{Diff, FileStatus};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -6,8 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
-use crate::git::{Diff, FileStatus};
-use crate::gh::PrInfo;
+use std::path::PathBuf;
 
 pub struct GitStatusPane {
     pub root_path: PathBuf,
@@ -33,7 +33,11 @@ impl GitStatusPane {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, focused: bool) {
-        let border_color = if focused { Color::Cyan } else { Color::DarkGray };
+        let border_color = if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
         let title_style = if focused {
             Style::default()
                 .fg(Color::White)
@@ -52,11 +56,8 @@ impl GitStatusPane {
 
         // Split inner into PR section (top) and diff section (bottom).
         let pr_height = if self.pr_info.is_some() { 4u16 } else { 2u16 };
-        let [pr_area, diff_area] = Layout::vertical([
-            Constraint::Length(pr_height),
-            Constraint::Min(1),
-        ])
-        .areas(inner);
+        let [pr_area, diff_area] =
+            Layout::vertical([Constraint::Length(pr_height), Constraint::Min(1)]).areas(inner);
 
         self.render_pr_section(frame, pr_area);
         self.render_diff_section(frame, diff_area);
@@ -93,7 +94,9 @@ impl GitStatusPane {
                         ),
                         Span::styled(
                             pr.state.clone(),
-                            Style::default().fg(state_color).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(state_color)
+                                .add_modifier(Modifier::BOLD),
                         ),
                     ]),
                     Line::from(Span::styled(

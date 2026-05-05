@@ -107,12 +107,18 @@ pub mod key_to_bytes {
 
         #[test]
         fn ctrl_c() {
-            assert_eq!(encode(key(KeyCode::Char('c'), KeyModifiers::CONTROL)), vec![0x03]);
+            assert_eq!(
+                encode(key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                vec![0x03]
+            );
         }
 
         #[test]
         fn ctrl_space() {
-            assert_eq!(encode(key(KeyCode::Char(' '), KeyModifiers::CONTROL)), vec![0x00]);
+            assert_eq!(
+                encode(key(KeyCode::Char(' '), KeyModifiers::CONTROL)),
+                vec![0x00]
+            );
         }
 
         #[test]
@@ -163,7 +169,10 @@ pub mod key_to_bytes {
 
         #[test]
         fn page_down() {
-            assert_eq!(encode(key(KeyCode::PageDown, KeyModifiers::NONE)), b"\x1b[6~");
+            assert_eq!(
+                encode(key(KeyCode::PageDown, KeyModifiers::NONE)),
+                b"\x1b[6~"
+            );
         }
     }
 }
@@ -314,7 +323,13 @@ impl TerminalPane {
 
     /// Returns a new TerminalPane replacing this one with a new shell at `cwd`.
     /// Shuts down the current PTY first.
-    pub fn restart(&mut self, rows: u16, cols: u16, cwd: &Path, tx: UnboundedSender<Event>) -> Result<()> {
+    pub fn restart(
+        &mut self,
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        tx: UnboundedSender<Event>,
+    ) -> Result<()> {
         self.shutdown();
         let new = Self::spawn(rows, cols, cwd, tx)?;
         *self = new;

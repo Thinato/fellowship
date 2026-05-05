@@ -34,7 +34,13 @@ impl Keymap {
 
     /// Process a key event given the current mode and focus pane.
     /// `now` is injectable for deterministic timeout testing.
-    pub fn handle(&self, mode: &mut InputMode, key: KeyEvent, focus: PaneId, now: Instant) -> Action {
+    pub fn handle(
+        &self,
+        mode: &mut InputMode,
+        key: KeyEvent,
+        focus: PaneId,
+        now: Instant,
+    ) -> Action {
         match mode {
             InputMode::Normal => {
                 if key == prefix_key() {
@@ -54,10 +60,7 @@ impl Keymap {
                     return self.handle(mode, key, focus, now);
                 }
                 // Look up binding; unbound follower is silently dropped (Consume)
-                self.bindings
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or(Action::Consume)
+                self.bindings.get(&key).cloned().unwrap_or(Action::Consume)
             }
         }
     }
@@ -223,7 +226,12 @@ mod tests {
         let a = km.handle(&mut mode, char_key('q'), PaneId::Terminal, now);
         assert_eq!(a, Action::PassThrough);
 
-        let a2 = km.handle(&mut mode, key(KeyCode::Esc, KeyModifiers::NONE), PaneId::Terminal, now);
+        let a2 = km.handle(
+            &mut mode,
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            PaneId::Terminal,
+            now,
+        );
         assert_eq!(a2, Action::PassThrough);
     }
 }

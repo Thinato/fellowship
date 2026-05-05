@@ -1,7 +1,7 @@
-use std::path::PathBuf;
-use crossterm::event::KeyEvent;
-use crate::git::{Diff, Worktree};
 use crate::gh::PrInfo;
+use crate::git::{Diff, Worktree};
+use crossterm::event::KeyEvent;
+use std::path::PathBuf;
 
 #[derive(Debug)]
 #[allow(dead_code)]

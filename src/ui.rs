@@ -1,3 +1,5 @@
+use crate::app::{App, PaneId};
+use crate::keymap::InputMode;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -5,8 +7,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
 };
-use crate::app::{App, PaneId};
-use crate::keymap::InputMode;
 
 pub mod theme {
     use ratatui::style::Color;
@@ -21,11 +21,8 @@ pub mod theme {
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    let [main_area, status_area] = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    let [main_area, status_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
 
     let [left_area, mid_area, right_area] = Layout::horizontal([
         Constraint::Length(28),
@@ -92,8 +89,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         ));
     }
 
-    let paragraph = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(theme::STATUS_BG));
+    let paragraph = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::STATUS_BG));
     frame.render_widget(paragraph, area);
 }
 

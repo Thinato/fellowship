@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 #[derive(Debug, Clone)]
@@ -58,7 +58,13 @@ impl FileStatus {
 
 pub async fn list_worktrees(repo_path: &Path) -> Result<Vec<Worktree>> {
     let output = Command::new("git")
-        .args(["-C", repo_path.to_str().unwrap_or("."), "worktree", "list", "--porcelain"])
+        .args([
+            "-C",
+            repo_path.to_str().unwrap_or("."),
+            "worktree",
+            "list",
+            "--porcelain",
+        ])
         .output()
         .await
         .context("failed to run git worktree list")?;
@@ -82,8 +88,15 @@ fn parse_worktree_porcelain(input: &str) -> Result<Vec<Worktree>> {
                  head: Option<String>,
                  is_bare: bool,
                  is_current: bool| {
-        if let Some(p) = path && !is_bare {
-            worktrees.push(Worktree { path: p, branch, head, is_current });
+        if let Some(p) = path
+            && !is_bare
+        {
+            worktrees.push(Worktree {
+                path: p,
+                branch,
+                head,
+                is_current,
+            });
         }
     };
 
@@ -163,7 +176,13 @@ pub async fn add_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> {
 
 pub async fn current_branch(repo_path: &Path) -> Result<Option<String>> {
     let output = Command::new("git")
-        .args(["-C", repo_path.to_str().unwrap_or("."), "rev-parse", "--abbrev-ref", "HEAD"])
+        .args([
+            "-C",
+            repo_path.to_str().unwrap_or("."),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .await
         .context("failed to run git rev-parse")?;
@@ -183,10 +202,22 @@ pub async fn current_branch(repo_path: &Path) -> Result<Option<String>> {
 pub async fn diff_summary(repo_path: &Path) -> Result<Diff> {
     let (stat_out, name_out) = tokio::join!(
         Command::new("git")
-            .args(["-C", repo_path.to_str().unwrap_or("."), "diff", "--shortstat", "HEAD"])
+            .args([
+                "-C",
+                repo_path.to_str().unwrap_or("."),
+                "diff",
+                "--shortstat",
+                "HEAD"
+            ])
             .output(),
         Command::new("git")
-            .args(["-C", repo_path.to_str().unwrap_or("."), "diff", "--name-status", "HEAD"])
+            .args([
+                "-C",
+                repo_path.to_str().unwrap_or("."),
+                "diff",
+                "--name-status",
+                "HEAD"
+            ])
             .output(),
     );
 
@@ -209,7 +240,10 @@ pub async fn diff_summary(repo_path: &Path) -> Result<Diff> {
                 } else {
                     path
                 };
-                diff.files.push((FileStatus::from_char(status_char), PathBuf::from(actual_path)));
+                diff.files.push((
+                    FileStatus::from_char(status_char),
+                    PathBuf::from(actual_path),
+                ));
             }
         }
     }
@@ -284,7 +318,10 @@ bare
     #[test]
     fn test_parse_shortstat() {
         let mut diff = Diff::default();
-        parse_shortstat(" 3 files changed, 45 insertions(+), 12 deletions(-)", &mut diff);
+        parse_shortstat(
+            " 3 files changed, 45 insertions(+), 12 deletions(-)",
+            &mut diff,
+        );
         assert_eq!(diff.insertions, 45);
         assert_eq!(diff.deletions, 12);
     }

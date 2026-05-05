@@ -6,8 +6,8 @@ use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
 use crate::event::Event;
-use crate::git;
 use crate::gh;
+use crate::git;
 use crate::keymap::{Action, InputMode, Keymap, default_bindings};
 use crate::panes::gitstatus::GitStatusPane;
 use crate::panes::terminal::TerminalPane;
@@ -55,7 +55,9 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
         let now = Instant::now();
-        let action = self.keymap.handle(&mut self.input_mode, key, self.focus, now);
+        let action = self
+            .keymap
+            .handle(&mut self.input_mode, key, self.focus, now);
 
         match action {
             Action::FocusPane(pane) => {
@@ -71,8 +73,7 @@ impl App {
                 if self.focus == PaneId::Terminal {
                     use crate::panes::terminal::key_to_bytes;
                     use crossterm::event::{KeyCode, KeyModifiers};
-                    let ctrl_space =
-                        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
+                    let ctrl_space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
                     let _ = self.terminal.write_keys(&key_to_bytes::encode(ctrl_space));
                 }
             }
@@ -114,7 +115,8 @@ impl App {
                 self.active_path = path.clone();
                 self.git_status.root_path = path.clone();
                 let size = self.terminal.size();
-                self.terminal.restart(size.0, size.1, &path, self.event_tx.clone())?;
+                self.terminal
+                    .restart(size.0, size.1, &path, self.event_tx.clone())?;
                 // Trigger immediate git + PR refresh
                 let _ = self.event_tx.send(Event::GitRefresh);
             }

@@ -1,6 +1,6 @@
-use std::path::Path;
 use anyhow::Result;
 use serde::Deserialize;
+use std::path::Path;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -18,13 +18,7 @@ pub async fn current_pr(repo_path: &Path, branch: &str) -> Result<Option<PrInfo>
     }
 
     let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            branch,
-            "--json",
-            "number,title,state,url",
-        ])
+        .args(["pr", "view", branch, "--json", "number,title,state,url"])
         .current_dir(repo_path)
         .output()
         .await?;
