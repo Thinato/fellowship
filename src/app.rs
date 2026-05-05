@@ -69,8 +69,7 @@ impl App {
                 if self.focus == PaneId::Terminal {
                     use crate::panes::terminal::key_to_bytes;
                     use crossterm::event::{KeyCode, KeyModifiers};
-                    let ctrl_a =
-                        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+                    let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
                     let _ = self.terminal.write_keys(&key_to_bytes::encode(ctrl_a));
                 }
             }

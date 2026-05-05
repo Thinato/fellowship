@@ -45,10 +45,7 @@ impl Keymap {
                 if key.code == KeyCode::Esc {
                     return Action::Consume;
                 }
-                self.bindings
-                    .get(&key)
-                    .cloned()
-                    .unwrap_or(Action::Consume)
+                self.bindings.get(&key).cloned().unwrap_or(Action::Consume)
             }
         }
     }
@@ -169,7 +166,11 @@ mod tests {
         km.handle(&mut mode, ctrl_a(), PaneId::Workspaces);
         assert!(matches!(mode, InputMode::AwaitingPrefixFollower));
 
-        let a = km.handle(&mut mode, key(KeyCode::Esc, KeyModifiers::NONE), PaneId::Workspaces);
+        let a = km.handle(
+            &mut mode,
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            PaneId::Workspaces,
+        );
         assert_eq!(a, Action::Consume);
         assert!(matches!(mode, InputMode::Normal));
     }
@@ -193,7 +194,11 @@ mod tests {
         let a = km.handle(&mut mode, char_key('q'), PaneId::Terminal);
         assert_eq!(a, Action::PassThrough);
 
-        let a2 = km.handle(&mut mode, key(KeyCode::Esc, KeyModifiers::NONE), PaneId::Terminal);
+        let a2 = km.handle(
+            &mut mode,
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            PaneId::Terminal,
+        );
         assert_eq!(a2, Action::PassThrough);
     }
 }
