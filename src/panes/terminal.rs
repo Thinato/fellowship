@@ -320,21 +320,6 @@ impl TerminalPane {
     pub fn shutdown(&mut self) {
         let _ = self.child.kill();
     }
-
-    /// Returns a new TerminalPane replacing this one with a new shell at `cwd`.
-    /// Shuts down the current PTY first.
-    pub fn restart(
-        &mut self,
-        rows: u16,
-        cols: u16,
-        cwd: &Path,
-        tx: UnboundedSender<Event>,
-    ) -> Result<()> {
-        self.shutdown();
-        let new = Self::spawn(rows, cols, cwd, tx)?;
-        *self = new;
-        Ok(())
-    }
 }
 
 fn vt_style(cell: &vt100::Cell) -> Style {

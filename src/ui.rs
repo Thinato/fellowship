@@ -48,7 +48,10 @@ fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_terminal_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Terminal;
-    app.terminal.render(frame, area, focused);
+    let path = app.active_path.clone();
+    if let Some(t) = app.terminals.get_mut(&path) {
+        t.render(frame, area, focused);
+    }
 }
 
 fn render_gitstatus_pane(frame: &mut Frame, app: &mut App, area: Rect) {

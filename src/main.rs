@@ -106,7 +106,9 @@ async fn run(
         terminal.draw(|f| ui::render(f, &mut app))?;
 
         if app.should_quit {
-            app.terminal.shutdown();
+            for t in app.terminals.values_mut() {
+                t.shutdown();
+            }
             break;
         }
 

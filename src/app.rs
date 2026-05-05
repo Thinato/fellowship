@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -23,11 +24,12 @@ pub struct App {
     pub focus: PaneId,
     pub input_mode: InputMode,
     pub workspaces: WorkspacesPane,
-    pub terminal: TerminalPane,
+    pub terminals: HashMap<PathBuf, TerminalPane>,
     pub git_status: GitStatusPane,
     pub show_help: bool,
     pub should_quit: bool,
     pub active_path: PathBuf,
+    pub last_term_size: (u16, u16),
     pub event_tx: mpsc::UnboundedSender<Event>,
     keymap: Keymap,
 }
@@ -38,18 +40,27 @@ impl App {
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
     ) -> Self {
+        let last_term_size = terminal.size();
+        let mut terminals = HashMap::new();
+        terminals.insert(root_path.clone(), terminal);
         Self {
             focus: PaneId::Terminal,
             input_mode: InputMode::Normal,
             workspaces: WorkspacesPane::new(root_path.clone()),
-            terminal,
+            terminals,
             git_status: GitStatusPane::new(root_path.clone()),
             show_help: false,
             should_quit: false,
             active_path: root_path,
+            last_term_size,
             event_tx,
             keymap: Keymap::new(default_bindings()),
         }
+    }
+
+    pub fn active_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
+        let path = self.active_path.clone();
+        self.terminals.get_mut(&path)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -70,7 +81,9 @@ impl App {
                     use crate::panes::terminal::key_to_bytes;
                     use crossterm::event::{KeyCode, KeyModifiers};
                     let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
-                    let _ = self.terminal.write_keys(&key_to_bytes::encode(ctrl_a));
+                    if let Some(t) = self.active_terminal_mut() {
+                        let _ = t.write_keys(&key_to_bytes::encode(ctrl_a));
+                    }
                 }
             }
             Action::PassThrough => {
@@ -86,8 +99,10 @@ impl App {
             PaneId::Terminal => {
                 use crate::panes::terminal::key_to_bytes;
                 let bytes = key_to_bytes::encode(key);
-                if !bytes.is_empty() {
-                    self.terminal.write_keys(&bytes)?;
+                if !bytes.is_empty()
+                    && let Some(t) = self.active_terminal_mut()
+                {
+                    t.write_keys(&bytes)?;
                 }
             }
             PaneId::Workspaces => {
@@ -110,10 +125,13 @@ impl App {
             Event::SwitchWorkspace(path) => {
                 self.active_path = path.clone();
                 self.git_status.root_path = path.clone();
-                let size = self.terminal.size();
-                self.terminal
-                    .restart(size.0, size.1, &path, self.event_tx.clone())?;
-                // Trigger immediate git + PR refresh
+                let (rows, cols) = self.last_term_size;
+                if !self.terminals.contains_key(&path) {
+                    let pane = TerminalPane::spawn(rows, cols, &path, self.event_tx.clone())?;
+                    self.terminals.insert(path.clone(), pane);
+                } else if let Some(t) = self.terminals.get_mut(&path) {
+                    let _ = t.resize(rows, cols);
+                }
                 let _ = self.event_tx.send(Event::GitRefresh);
             }
             Event::CreateWorktree(branch) => {
@@ -169,9 +187,11 @@ impl App {
     }
 
     pub fn resize_terminal(&mut self, area: ratatui::layout::Rect) {
-        // area is the inner area for the terminal pane (after border)
         let rows = area.height;
         let cols = area.width;
-        let _ = self.terminal.resize(rows, cols);
+        self.last_term_size = (rows, cols);
+        if let Some(t) = self.active_terminal_mut() {
+            let _ = t.resize(rows, cols);
+        }
     }
 }
