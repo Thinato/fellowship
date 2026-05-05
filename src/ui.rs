@@ -57,7 +57,7 @@ fn render_gitstatus_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
-    let prefix_indicator = matches!(app.input_mode, InputMode::AwaitingPrefixFollower { .. });
+    let prefix_indicator = matches!(app.input_mode, InputMode::AwaitingPrefixFollower);
 
     let focus_label = match app.focus {
         PaneId::Workspaces => "WORKSPACES",
@@ -74,7 +74,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  Ctrl+Space: prefix  ?:help  q:quit",
+            "  Ctrl+a: prefix  ?:help  q:quit",
             Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
         ),
     ];
@@ -107,12 +107,13 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 
     let help_text = vec![
         Line::from(""),
-        Line::from("  Ctrl+Space e        Focus Workspaces"),
-        Line::from("  Ctrl+Space t        Focus Terminal"),
-        Line::from("  Ctrl+Space g        Focus Git Status"),
-        Line::from("  Ctrl+Space q        Quit"),
-        Line::from("  Ctrl+Space ?        Toggle help"),
-        Line::from("  Ctrl+Space Ctrl+Spc Send ^Space to PTY"),
+        Line::from("  Ctrl+a e         Focus Workspaces"),
+        Line::from("  Ctrl+a t         Focus Terminal"),
+        Line::from("  Ctrl+a g         Focus Git Status"),
+        Line::from("  Ctrl+a q         Quit"),
+        Line::from("  Ctrl+a ?         Toggle help"),
+        Line::from("  Ctrl+a Ctrl+a    Send literal ^A to PTY"),
+        Line::from("  Ctrl+a Esc       Cancel prefix"),
         Line::from(""),
         Line::from("  j/k   Navigate list panes"),
         Line::from("  n     New worktree (Workspaces)"),

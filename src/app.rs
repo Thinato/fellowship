@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::time::Instant;
 
 use anyhow::Result;
 use crossterm::event::KeyEvent;
@@ -54,10 +53,7 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
-        let now = Instant::now();
-        let action = self
-            .keymap
-            .handle(&mut self.input_mode, key, self.focus, now);
+        let action = self.keymap.handle(&mut self.input_mode, key, self.focus);
 
         match action {
             Action::FocusPane(pane) => {
@@ -73,8 +69,9 @@ impl App {
                 if self.focus == PaneId::Terminal {
                     use crate::panes::terminal::key_to_bytes;
                     use crossterm::event::{KeyCode, KeyModifiers};
-                    let ctrl_space = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL);
-                    let _ = self.terminal.write_keys(&key_to_bytes::encode(ctrl_space));
+                    let ctrl_a =
+                        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
+                    let _ = self.terminal.write_keys(&key_to_bytes::encode(ctrl_a));
                 }
             }
             Action::PassThrough => {

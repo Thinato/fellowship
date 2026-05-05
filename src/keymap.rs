@@ -1,11 +1,8 @@
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::PaneId;
-
-const PREFIX_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -20,7 +17,7 @@ pub enum Action {
 #[derive(Debug)]
 pub enum InputMode {
     Normal,
-    AwaitingPrefixFollower { since: Instant },
+    AwaitingPrefixFollower,
 }
 
 pub struct Keymap {
@@ -33,34 +30,25 @@ impl Keymap {
     }
 
     /// Process a key event given the current mode and focus pane.
-    /// `now` is injectable for deterministic timeout testing.
-    pub fn handle(
-        &self,
-        mode: &mut InputMode,
-        key: KeyEvent,
-        focus: PaneId,
-        now: Instant,
-    ) -> Action {
+    /// Prefix mode persists indefinitely; Esc exits without action.
+    pub fn handle(&self, mode: &mut InputMode, key: KeyEvent, _focus: PaneId) -> Action {
         match mode {
             InputMode::Normal => {
                 if key == prefix_key() {
-                    *mode = InputMode::AwaitingPrefixFollower { since: now };
+                    *mode = InputMode::AwaitingPrefixFollower;
                     return Action::Consume;
-                }
-                if focus == PaneId::Terminal {
-                    return Action::PassThrough;
                 }
                 Action::PassThrough
             }
-            InputMode::AwaitingPrefixFollower { since } => {
-                let elapsed = now.duration_since(*since);
+            InputMode::AwaitingPrefixFollower => {
                 *mode = InputMode::Normal;
-                if elapsed > PREFIX_TIMEOUT {
-                    // Timeout: re-dispatch key as if in Normal mode
-                    return self.handle(mode, key, focus, now);
+                if key.code == KeyCode::Esc {
+                    return Action::Consume;
                 }
-                // Look up binding; unbound follower is silently dropped (Consume)
-                self.bindings.get(&key).cloned().unwrap_or(Action::Consume)
+                self.bindings
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or(Action::Consume)
             }
         }
     }
@@ -89,14 +77,14 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
         Action::ToggleHelp,
     );
     map.insert(
-        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL),
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         Action::SendLiteralPrefix,
     );
     map
 }
 
 pub fn prefix_key() -> KeyEvent {
-    KeyEvent::new(KeyCode::Char(' '), KeyModifiers::CONTROL)
+    KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)
 }
 
 #[cfg(test)]
@@ -115,28 +103,20 @@ mod tests {
         key(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    fn ctrl_space() -> KeyEvent {
-        key(KeyCode::Char(' '), KeyModifiers::CONTROL)
-    }
-
-    /// Returns an Instant that is `secs` seconds after the epoch-like base.
-    /// We use Instant::now() as base and offset — since we pass `now` explicitly,
-    /// we control elapsed by using a base in the past.
-    fn instant_ago(secs: u64) -> Instant {
-        Instant::now() - Duration::from_secs(secs)
+    fn ctrl_a() -> KeyEvent {
+        key(KeyCode::Char('a'), KeyModifiers::CONTROL)
     }
 
     #[test]
     fn prefix_then_e_focuses_workspaces() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        let a1 = km.handle(&mut mode, ctrl_space(), PaneId::GitStatus, now);
+        let a1 = km.handle(&mut mode, ctrl_a(), PaneId::GitStatus);
         assert_eq!(a1, Action::Consume);
-        assert!(matches!(mode, InputMode::AwaitingPrefixFollower { .. }));
+        assert!(matches!(mode, InputMode::AwaitingPrefixFollower));
 
-        let a2 = km.handle(&mut mode, char_key('e'), PaneId::GitStatus, now);
+        let a2 = km.handle(&mut mode, char_key('e'), PaneId::GitStatus);
         assert_eq!(a2, Action::FocusPane(PaneId::Workspaces));
         assert!(matches!(mode, InputMode::Normal));
     }
@@ -145,10 +125,9 @@ mod tests {
     fn prefix_then_t_focuses_terminal() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        km.handle(&mut mode, ctrl_space(), PaneId::Workspaces, now);
-        let a = km.handle(&mut mode, char_key('t'), PaneId::Workspaces, now);
+        km.handle(&mut mode, ctrl_a(), PaneId::Workspaces);
+        let a = km.handle(&mut mode, char_key('t'), PaneId::Workspaces);
         assert_eq!(a, Action::FocusPane(PaneId::Terminal));
     }
 
@@ -156,10 +135,9 @@ mod tests {
     fn prefix_then_g_focuses_gitstatus() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        km.handle(&mut mode, ctrl_space(), PaneId::Terminal, now);
-        let a = km.handle(&mut mode, char_key('g'), PaneId::Terminal, now);
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('g'), PaneId::Terminal);
         assert_eq!(a, Action::FocusPane(PaneId::GitStatus));
     }
 
@@ -167,10 +145,9 @@ mod tests {
     fn prefix_then_q_quits() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        km.handle(&mut mode, ctrl_space(), PaneId::Terminal, now);
-        let a = km.handle(&mut mode, char_key('q'), PaneId::Terminal, now);
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('q'), PaneId::Terminal);
         assert_eq!(a, Action::Quit);
     }
 
@@ -178,28 +155,22 @@ mod tests {
     fn double_prefix_emits_send_literal_prefix() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        km.handle(&mut mode, ctrl_space(), PaneId::Terminal, now);
-        let a = km.handle(&mut mode, ctrl_space(), PaneId::Terminal, now);
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         assert_eq!(a, Action::SendLiteralPrefix);
     }
 
     #[test]
-    fn prefix_timeout_drops_state_and_redispatches() {
+    fn esc_cancels_prefix_mode() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
 
-        // Simulate prefix pressed 2 seconds ago
-        let prefix_time = instant_ago(2);
-        km.handle(&mut mode, ctrl_space(), PaneId::Workspaces, prefix_time);
-        assert!(matches!(mode, InputMode::AwaitingPrefixFollower { .. }));
+        km.handle(&mut mode, ctrl_a(), PaneId::Workspaces);
+        assert!(matches!(mode, InputMode::AwaitingPrefixFollower));
 
-        // now = current time; elapsed > 1s → timeout, key is re-dispatched as Normal
-        let now = Instant::now();
-        // 'e' in Normal mode with Workspaces focus → PassThrough (pane handles it)
-        let a = km.handle(&mut mode, char_key('e'), PaneId::Workspaces, now);
-        assert_eq!(a, Action::PassThrough);
+        let a = km.handle(&mut mode, key(KeyCode::Esc, KeyModifiers::NONE), PaneId::Workspaces);
+        assert_eq!(a, Action::Consume);
         assert!(matches!(mode, InputMode::Normal));
     }
 
@@ -207,11 +178,9 @@ mod tests {
     fn unbound_follower_silently_dropped() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        km.handle(&mut mode, ctrl_space(), PaneId::Terminal, now);
-        // 'z' is not bound
-        let a = km.handle(&mut mode, char_key('z'), PaneId::Terminal, now);
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('z'), PaneId::Terminal);
         assert_eq!(a, Action::Consume);
         assert!(matches!(mode, InputMode::Normal));
     }
@@ -220,18 +189,11 @@ mod tests {
     fn terminal_focus_passes_through_normal_keys() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
-        let now = Instant::now();
 
-        // Any non-prefix key while focused on Terminal → PassThrough
-        let a = km.handle(&mut mode, char_key('q'), PaneId::Terminal, now);
+        let a = km.handle(&mut mode, char_key('q'), PaneId::Terminal);
         assert_eq!(a, Action::PassThrough);
 
-        let a2 = km.handle(
-            &mut mode,
-            key(KeyCode::Esc, KeyModifiers::NONE),
-            PaneId::Terminal,
-            now,
-        );
+        let a2 = km.handle(&mut mode, key(KeyCode::Esc, KeyModifiers::NONE), PaneId::Terminal);
         assert_eq!(a2, Action::PassThrough);
     }
 }
