@@ -182,16 +182,9 @@ async fn worktree_path_for(repo_path: &Path, branch: &str) -> Result<PathBuf> {
     let base = home.join(".fellowship").join("worktrees");
 
     let (owner, repo) = match remote_origin(repo_path).await? {
-        Some(url) => parse_owner_repo(&url).unwrap_or_else(|| {
-            (
-                "local".to_string(),
-                repo_dirname(repo_path).to_string(),
-            )
-        }),
-        None => (
-            "local".to_string(),
-            repo_dirname(repo_path).to_string(),
-        ),
+        Some(url) => parse_owner_repo(&url)
+            .unwrap_or_else(|| ("local".to_string(), repo_dirname(repo_path).to_string())),
+        None => ("local".to_string(), repo_dirname(repo_path).to_string()),
     };
 
     let mut path = base.join(owner).join(repo);
@@ -349,7 +342,8 @@ pub async fn diff_summary(repo_path: &Path) -> Result<Diff> {
         for line in text.lines() {
             let path = line.trim();
             if !path.is_empty() {
-                diff.files.push((FileStatus::Untracked, PathBuf::from(path)));
+                diff.files
+                    .push((FileStatus::Untracked, PathBuf::from(path)));
             }
         }
     }

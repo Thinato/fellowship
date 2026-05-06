@@ -19,9 +19,7 @@ impl Config {
 
     fn merge(global: Self, local: Self) -> Self {
         Self {
-            shell_startup_command: local
-                .shell_startup_command
-                .or(global.shell_startup_command),
+            shell_startup_command: local.shell_startup_command.or(global.shell_startup_command),
         }
     }
 }
