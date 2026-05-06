@@ -172,6 +172,28 @@ pub async fn add_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> {
     Ok(wt_path)
 }
 
+pub async fn remove_worktree(repo_path: &Path, worktree_path: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            repo_path.to_str().unwrap_or("."),
+            "worktree",
+            "remove",
+            "--force",
+            worktree_path.to_str().unwrap_or(""),
+        ])
+        .output()
+        .await
+        .context("failed to run git worktree remove")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git worktree remove failed: {}", stderr.trim());
+    }
+
+    Ok(())
+}
+
 /// Compute target worktree path: `$HOME/.fellowship/worktrees/<owner>/<repo>/<branch>`.
 /// Falls back to `local/<repo-dirname>/<branch>` when origin remote is absent.
 /// Branch slashes are preserved (e.g. `feat/x` → `.../<repo>/feat/x`).

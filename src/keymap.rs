@@ -20,6 +20,8 @@ pub enum Action {
     Quit,
     ToggleHelp,
     SendLiteralPrefix,
+    EnterCommandMode,
+    ExecuteCommand(String),
     PassThrough,
     Consume,
 }
@@ -28,6 +30,7 @@ pub enum Action {
 pub enum InputMode {
     Normal,
     AwaitingPrefixFollower,
+    Command(String),
 }
 
 pub struct Keymap {
@@ -55,8 +58,39 @@ impl Keymap {
                 if key.code == KeyCode::Esc {
                     return Action::Consume;
                 }
-                self.bindings.get(&key).cloned().unwrap_or(Action::Consume)
+                let action = self.bindings.get(&key).cloned().unwrap_or(Action::Consume);
+                if matches!(action, Action::EnterCommandMode) {
+                    *mode = InputMode::Command(String::new());
+                    return Action::Consume;
+                }
+                action
             }
+            InputMode::Command(buf) => match key.code {
+                KeyCode::Esc => {
+                    *mode = InputMode::Normal;
+                    Action::Consume
+                }
+                KeyCode::Enter => {
+                    let cmd = std::mem::take(buf);
+                    *mode = InputMode::Normal;
+                    Action::ExecuteCommand(cmd)
+                }
+                KeyCode::Backspace => {
+                    if buf.pop().is_none() {
+                        *mode = InputMode::Normal;
+                    }
+                    Action::Consume
+                }
+                KeyCode::Char(c) => {
+                    if key.modifiers.contains(KeyModifiers::CONTROL) && (c == 'c' || c == 'g') {
+                        *mode = InputMode::Normal;
+                        return Action::Consume;
+                    }
+                    buf.push(c);
+                    Action::Consume
+                }
+                _ => Action::Consume,
+            },
         }
     }
 }
@@ -86,6 +120,14 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
     map.insert(
         KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         Action::SendLiteralPrefix,
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE),
+        Action::EnterCommandMode,
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char(':'), KeyModifiers::SHIFT),
+        Action::EnterCommandMode,
     );
     map.insert(
         KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
@@ -267,6 +309,70 @@ mod tests {
         km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         let a = km.handle(&mut mode, char_key('l'), PaneId::Terminal);
         assert_eq!(a, Action::FocusDir(Dir::Right));
+    }
+
+    #[test]
+    fn prefix_then_colon_enters_command_mode() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key(':'), PaneId::Terminal);
+        assert_eq!(a, Action::Consume);
+        assert!(matches!(mode, InputMode::Command(ref s) if s.is_empty()));
+    }
+
+    #[test]
+    fn command_mode_collects_chars_and_executes_on_enter() {
+        let km = make_keymap();
+        let mut mode = InputMode::Command(String::new());
+        for c in "quit".chars() {
+            let a = km.handle(&mut mode, char_key(c), PaneId::Terminal);
+            assert_eq!(a, Action::Consume);
+        }
+        let a = km.handle(
+            &mut mode,
+            key(KeyCode::Enter, KeyModifiers::NONE),
+            PaneId::Terminal,
+        );
+        assert_eq!(a, Action::ExecuteCommand("quit".into()));
+        assert!(matches!(mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn command_mode_esc_cancels() {
+        let km = make_keymap();
+        let mut mode = InputMode::Command("foo".into());
+        let a = km.handle(
+            &mut mode,
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            PaneId::Terminal,
+        );
+        assert_eq!(a, Action::Consume);
+        assert!(matches!(mode, InputMode::Normal));
+    }
+
+    #[test]
+    fn command_mode_backspace_deletes_then_exits_when_empty() {
+        let km = make_keymap();
+        let mut mode = InputMode::Command("ab".into());
+        km.handle(
+            &mut mode,
+            key(KeyCode::Backspace, KeyModifiers::NONE),
+            PaneId::Terminal,
+        );
+        assert!(matches!(mode, InputMode::Command(ref s) if s == "a"));
+        km.handle(
+            &mut mode,
+            key(KeyCode::Backspace, KeyModifiers::NONE),
+            PaneId::Terminal,
+        );
+        assert!(matches!(mode, InputMode::Command(ref s) if s.is_empty()));
+        km.handle(
+            &mut mode,
+            key(KeyCode::Backspace, KeyModifiers::NONE),
+            PaneId::Terminal,
+        );
+        assert!(matches!(mode, InputMode::Normal));
     }
 
     #[test]

@@ -12,6 +12,8 @@ pub enum Event {
     PtyOutput,
     SwitchWorkspace(PathBuf),
     CreateWorktree(String),
+    PromptDeleteWorktree(PathBuf, String),
+    DeleteWorktree(PathBuf),
     WorktreesRefreshed(Vec<Worktree>),
     DiffUpdated(Diff),
     PrUpdated(Option<PrInfo>),

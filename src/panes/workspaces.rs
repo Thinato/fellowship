@@ -143,6 +143,16 @@ impl WorkspacesPane {
                     self.open_modal();
                     None
                 }
+                (KeyCode::Char('d'), KeyModifiers::NONE) => self.selected_worktree().map(|wt| {
+                    let name = wt.branch.clone().unwrap_or_else(|| {
+                        wt.path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("(unknown)")
+                            .to_string()
+                    });
+                    Event::PromptDeleteWorktree(wt.path.clone(), name)
+                }),
                 (KeyCode::Enter, _) => self
                     .selected_worktree()
                     .map(|wt| Event::SwitchWorkspace(wt.path.clone())),

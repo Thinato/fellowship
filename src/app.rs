@@ -29,6 +29,7 @@ pub struct App {
     pub git_status: GitStatusPane,
     pub show_help: bool,
     pub should_quit: bool,
+    pub pending_delete: Option<(PathBuf, String)>,
     pub active_path: PathBuf,
     pub last_term_size: (u16, u16),
     pub event_tx: mpsc::UnboundedSender<Event>,
@@ -55,6 +56,7 @@ impl App {
             git_status: GitStatusPane::new(root_path.clone()),
             show_help: false,
             should_quit: false,
+            pending_delete: None,
             active_path: root_path,
             last_term_size,
             event_tx,
@@ -64,12 +66,38 @@ impl App {
         }
     }
 
+    fn execute_command(&mut self, cmd: &str) {
+        match cmd.trim() {
+            "" => {}
+            "q" | "quit" => {
+                self.should_quit = true;
+            }
+            _ => {}
+        }
+    }
+
     pub fn active_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
         let path = self.active_path.clone();
         self.terminals.get_mut(&path)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.pending_delete.is_some() {
+            use crossterm::event::KeyCode;
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    if let Some((path, _)) = self.pending_delete.take() {
+                        let _ = self.event_tx.send(Event::DeleteWorktree(path));
+                    }
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    self.pending_delete = None;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         let action = self.keymap.handle(&mut self.input_mode, key, self.focus);
 
         match action {
@@ -92,6 +120,10 @@ impl App {
             }
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
+            }
+            Action::EnterCommandMode => {}
+            Action::ExecuteCommand(cmd) => {
+                self.execute_command(&cmd);
             }
             Action::SendLiteralPrefix => {
                 if self.focus == PaneId::Terminal {
@@ -158,6 +190,31 @@ impl App {
                     let _ = t.resize(rows, cols);
                 }
                 let _ = self.event_tx.send(Event::GitRefresh);
+            }
+            Event::PromptDeleteWorktree(path, name) => {
+                if path == self.active_path {
+                    // Refuse: cannot remove current worktree from inside it.
+                } else {
+                    self.pending_delete = Some((path, name));
+                }
+            }
+            Event::DeleteWorktree(path) => {
+                let root = self.active_path.clone();
+                let tx = self.event_tx.clone();
+                let target = path.clone();
+                self.terminals.remove(&path);
+                tokio::spawn(async move {
+                    match git::remove_worktree(&root, &target).await {
+                        Ok(_) => {
+                            if let Ok(wts) = git::list_worktrees(&root).await {
+                                let _ = tx.send(Event::WorktreesRefreshed(wts));
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("git worktree remove failed: {e}");
+                        }
+                    }
+                });
             }
             Event::CreateWorktree(branch) => {
                 let root = self.active_path.clone();

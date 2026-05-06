@@ -39,6 +39,37 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if app.show_help {
         render_help_overlay(frame, area);
     }
+
+    if let Some((_, name)) = &app.pending_delete {
+        render_confirm_delete(frame, area, name);
+    }
+}
+
+fn render_confirm_delete(frame: &mut Frame, area: Rect, name: &str) {
+    let prompt = format!("Are you sure you want to remove {} (Y/n) ", name);
+    let width = (prompt.chars().count() as u16 + 4).min(area.width);
+    let height = 3u16;
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup = Rect::new(x, y, width, height.min(area.height));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ratatui::style::Color::Red))
+        .title(Span::styled(
+            " Confirm ",
+            Style::default()
+                .fg(ratatui::style::Color::Red)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(prompt)
+            .block(block)
+            .style(Style::default().fg(theme::TITLE_COLOR)),
+        popup,
+    );
 }
 
 fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -60,6 +91,16 @@ fn render_gitstatus_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
+    if let InputMode::Command(buf) = &app.input_mode {
+        let line = Line::from(vec![Span::styled(
+            format!(":{}", buf),
+            Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
+        )]);
+        let paragraph = Paragraph::new(line).style(Style::default().bg(theme::STATUS_BG));
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     let prefix_indicator = matches!(app.input_mode, InputMode::AwaitingPrefixFollower);
 
     let focus_label = match app.focus {
@@ -77,7 +118,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            "  Ctrl+a: prefix  ?:help  q:quit",
+            "  Ctrl+a: prefix  ?:help  :quit",
             Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
         ),
     ];
@@ -98,7 +139,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_width = 52u16;
-    let help_height = 15u16;
+    let help_height = 17u16;
     let x = area.x + area.width.saturating_sub(help_width) / 2;
     let y = area.y + area.height.saturating_sub(help_height) / 2;
     let popup_area = Rect::new(
@@ -119,9 +160,11 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  Ctrl+a Esc       Cancel prefix"),
         Line::from("  Ctrl+a 1..9      Switch worktree by index"),
         Line::from("  Ctrl+a h/j/k/l   Focus left/down/up/right pane"),
+        Line::from("  Ctrl+a :         Command mode (:q, :quit)"),
         Line::from(""),
         Line::from("  j/k   Navigate list panes"),
         Line::from("  n     New worktree (Workspaces)"),
+        Line::from("  d     Delete selected worktree"),
         Line::from("  Enter Switch to worktree"),
         Line::from(""),
     ];
