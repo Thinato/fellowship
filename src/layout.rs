@@ -17,9 +17,21 @@ impl PaneLayout {
     pub fn default_horizontal() -> Self {
         Self {
             slots: vec![
-                Slot { pane: PaneId::Workspaces, col: 0, row: 0 },
-                Slot { pane: PaneId::Terminal, col: 1, row: 0 },
-                Slot { pane: PaneId::GitStatus, col: 2, row: 0 },
+                Slot {
+                    pane: PaneId::Workspaces,
+                    col: 0,
+                    row: 0,
+                },
+                Slot {
+                    pane: PaneId::Terminal,
+                    col: 1,
+                    row: 0,
+                },
+                Slot {
+                    pane: PaneId::GitStatus,
+                    col: 2,
+                    row: 0,
+                },
             ],
         }
     }
@@ -83,12 +95,18 @@ mod tests {
 
     #[test]
     fn default_terminal_left_is_workspaces() {
-        assert_eq!(default().neighbor(PaneId::Terminal, Dir::Left), Some(PaneId::Workspaces));
+        assert_eq!(
+            default().neighbor(PaneId::Terminal, Dir::Left),
+            Some(PaneId::Workspaces)
+        );
     }
 
     #[test]
     fn default_terminal_right_is_gitstatus() {
-        assert_eq!(default().neighbor(PaneId::Terminal, Dir::Right), Some(PaneId::GitStatus));
+        assert_eq!(
+            default().neighbor(PaneId::Terminal, Dir::Right),
+            Some(PaneId::GitStatus)
+        );
     }
 
     #[test]
@@ -108,7 +126,10 @@ mod tests {
 
     #[test]
     fn default_workspaces_right_is_terminal() {
-        assert_eq!(default().neighbor(PaneId::Workspaces, Dir::Right), Some(PaneId::Terminal));
+        assert_eq!(
+            default().neighbor(PaneId::Workspaces, Dir::Right),
+            Some(PaneId::Terminal)
+        );
     }
 
     #[test]
@@ -123,7 +144,10 @@ mod tests {
 
     #[test]
     fn default_gitstatus_left_is_terminal() {
-        assert_eq!(default().neighbor(PaneId::GitStatus, Dir::Left), Some(PaneId::Terminal));
+        assert_eq!(
+            default().neighbor(PaneId::GitStatus, Dir::Left),
+            Some(PaneId::Terminal)
+        );
     }
 
     #[test]
@@ -147,32 +171,56 @@ mod tests {
     fn custom() -> PaneLayout {
         PaneLayout {
             slots: vec![
-                Slot { pane: PaneId::Workspaces, col: 0, row: 0 },
-                Slot { pane: PaneId::Terminal, col: 1, row: 0 },
-                Slot { pane: PaneId::GitStatus, col: 0, row: 1 },
+                Slot {
+                    pane: PaneId::Workspaces,
+                    col: 0,
+                    row: 0,
+                },
+                Slot {
+                    pane: PaneId::Terminal,
+                    col: 1,
+                    row: 0,
+                },
+                Slot {
+                    pane: PaneId::GitStatus,
+                    col: 0,
+                    row: 1,
+                },
             ],
         }
     }
 
     #[test]
     fn custom_workspaces_down_is_gitstatus() {
-        assert_eq!(custom().neighbor(PaneId::Workspaces, Dir::Down), Some(PaneId::GitStatus));
+        assert_eq!(
+            custom().neighbor(PaneId::Workspaces, Dir::Down),
+            Some(PaneId::GitStatus)
+        );
     }
 
     #[test]
     fn custom_terminal_down_is_gitstatus() {
         // GitStatus is the only candidate below; col differs but it's the only option.
-        assert_eq!(custom().neighbor(PaneId::Terminal, Dir::Down), Some(PaneId::GitStatus));
+        assert_eq!(
+            custom().neighbor(PaneId::Terminal, Dir::Down),
+            Some(PaneId::GitStatus)
+        );
     }
 
     #[test]
     fn custom_gitstatus_up_is_workspaces() {
         // Workspaces (0,0) shares col=0; Terminal (1,0) does not. Same-col wins.
-        assert_eq!(custom().neighbor(PaneId::GitStatus, Dir::Up), Some(PaneId::Workspaces));
+        assert_eq!(
+            custom().neighbor(PaneId::GitStatus, Dir::Up),
+            Some(PaneId::Workspaces)
+        );
     }
 
     #[test]
     fn custom_gitstatus_right_is_terminal() {
-        assert_eq!(custom().neighbor(PaneId::GitStatus, Dir::Right), Some(PaneId::Terminal));
+        assert_eq!(
+            custom().neighbor(PaneId::GitStatus, Dir::Right),
+            Some(PaneId::Terminal)
+        );
     }
 }

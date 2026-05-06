@@ -186,7 +186,13 @@ pub struct TerminalPane {
 }
 
 impl TerminalPane {
-    pub fn spawn(rows: u16, cols: u16, cwd: &Path, tx: UnboundedSender<Event>) -> Result<Self> {
+    pub fn spawn(
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        tx: UnboundedSender<Event>,
+        startup_cmd: Option<&str>,
+    ) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -224,6 +230,17 @@ impl TerminalPane {
                 }
             }
         });
+
+        if let Some(cmd) = startup_cmd
+            && !cmd.is_empty()
+        {
+            let mut line = cmd.to_string();
+            line.push('\n');
+            if let Ok(mut w) = writer.lock() {
+                let _ = w.write_all(line.as_bytes());
+                let _ = w.flush();
+            }
+        }
 
         Ok(Self {
             parser,

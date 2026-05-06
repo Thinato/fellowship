@@ -65,8 +65,16 @@ async fn run(
     let mid_cols = size.width.saturating_sub(28 + 40 + 6).max(20);
     let mid_rows = size.height.saturating_sub(3).max(5);
 
-    let pty_pane = TerminalPane::spawn(mid_rows, mid_cols, &root_path, event_tx.clone())?;
-    let mut app = App::new(root_path.clone(), pty_pane, event_tx.clone());
+    let cfg = config::Config::load();
+    let startup_cmd = cfg.shell_startup_command.clone();
+    let pty_pane = TerminalPane::spawn(
+        mid_rows,
+        mid_cols,
+        &root_path,
+        event_tx.clone(),
+        startup_cmd.as_deref(),
+    )?;
+    let mut app = App::new(root_path.clone(), pty_pane, event_tx.clone(), startup_cmd);
 
     // Initial data load
     let _ = event_tx.send(Event::GitRefresh);

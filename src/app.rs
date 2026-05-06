@@ -33,6 +33,7 @@ pub struct App {
     pub last_term_size: (u16, u16),
     pub event_tx: mpsc::UnboundedSender<Event>,
     pub layout: PaneLayout,
+    pub startup_cmd: Option<String>,
     keymap: Keymap,
 }
 
@@ -41,6 +42,7 @@ impl App {
         root_path: PathBuf,
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
+        startup_cmd: Option<String>,
     ) -> Self {
         let last_term_size = terminal.size();
         let mut terminals = HashMap::new();
@@ -57,6 +59,7 @@ impl App {
             last_term_size,
             event_tx,
             layout: PaneLayout::default_horizontal(),
+            startup_cmd,
             keymap: Keymap::new(default_bindings()),
         }
     }
@@ -143,7 +146,13 @@ impl App {
                 self.focus = PaneId::Terminal;
                 let (rows, cols) = self.last_term_size;
                 if !self.terminals.contains_key(&path) {
-                    let pane = TerminalPane::spawn(rows, cols, &path, self.event_tx.clone())?;
+                    let pane = TerminalPane::spawn(
+                        rows,
+                        cols,
+                        &path,
+                        self.event_tx.clone(),
+                        self.startup_cmd.as_deref(),
+                    )?;
                     self.terminals.insert(path.clone(), pane);
                 } else if let Some(t) = self.terminals.get_mut(&path) {
                     let _ = t.resize(rows, cols);
