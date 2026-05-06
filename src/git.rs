@@ -140,16 +140,14 @@ fn parse_worktree_porcelain(input: &str) -> Result<Vec<Worktree>> {
 }
 
 pub async fn add_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> {
-    let repo_name = repo_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("repo");
-    let slug = branch.replace('/', "-");
-    let parent = repo_path.parent().unwrap_or(Path::new("."));
-    let wt_path = parent.join(format!("{}-{}", repo_name, slug));
+    let wt_path = worktree_path_for(repo_path, branch).await?;
 
     if wt_path.exists() {
         anyhow::bail!("worktree path already exists: {}", wt_path.display());
+    }
+    if let Some(parent) = wt_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to mkdir -p {}", parent.display()))?;
     }
 
     let output = Command::new("git")
@@ -172,6 +170,112 @@ pub async fn add_worktree(repo_path: &Path, branch: &str) -> Result<PathBuf> {
     }
 
     Ok(wt_path)
+}
+
+/// Compute target worktree path: `$HOME/.fellowship/worktrees/<owner>/<repo>/<branch>`.
+/// Falls back to `local/<repo-dirname>/<branch>` when origin remote is absent.
+/// Branch slashes are preserved (e.g. `feat/x` → `.../<repo>/feat/x`).
+async fn worktree_path_for(repo_path: &Path, branch: &str) -> Result<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME env var not set"))?;
+    let base = home.join(".fellowship").join("worktrees");
+
+    let (owner, repo) = match remote_origin(repo_path).await? {
+        Some(url) => parse_owner_repo(&url).unwrap_or_else(|| {
+            (
+                "local".to_string(),
+                repo_dirname(repo_path).to_string(),
+            )
+        }),
+        None => (
+            "local".to_string(),
+            repo_dirname(repo_path).to_string(),
+        ),
+    };
+
+    let mut path = base.join(owner).join(repo);
+    for seg in branch.split('/').filter(|s| !s.is_empty()) {
+        path.push(seg);
+    }
+    Ok(path)
+}
+
+fn repo_dirname(repo_path: &Path) -> &str {
+    repo_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+}
+
+pub async fn remote_origin(repo_path: &Path) -> Result<Option<String>> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            repo_path.to_str().unwrap_or("."),
+            "config",
+            "--get",
+            "remote.origin.url",
+        ])
+        .output()
+        .await
+        .context("failed to run git config")?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(url))
+    }
+}
+
+/// Parse `owner/repo` from common remote URL shapes. Returns `None` on unknown formats.
+/// Supports:
+///   - `git@host:owner/repo(.git)?`
+///   - `https://host/owner/repo(.git)?`
+///   - `https://host/group/sub/repo(.git)?` → owner = `group-sub`
+///   - `ssh://git@host/owner/repo(.git)?`
+pub fn parse_owner_repo(url: &str) -> Option<(String, String)> {
+    let url = url.trim().trim_end_matches('/');
+    let url = url.strip_suffix(".git").unwrap_or(url);
+
+    // SCP-style: git@github.com:owner/repo
+    if let Some((_, path)) = url.split_once(':')
+        && !url.starts_with("http://")
+        && !url.starts_with("https://")
+        && !url.starts_with("ssh://")
+        && !path.is_empty()
+    {
+        return split_path_into_owner_repo(path);
+    }
+
+    // URL form: scheme://[user@]host/path
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("ssh://"))
+        && let Some((_, path)) = rest.split_once('/')
+    {
+        return split_path_into_owner_repo(path);
+    }
+
+    None
+}
+
+fn split_path_into_owner_repo(path: &str) -> Option<(String, String)> {
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segs.as_slice() {
+        [] | [_] => None,
+        [owner, repo] => Some(((*owner).to_string(), (*repo).to_string())),
+        rest => {
+            // owner = all but last joined by '-', repo = last
+            let last = *rest.last().unwrap();
+            let owner = rest[..rest.len() - 1].join("-");
+            Some((owner, last.to_string()))
+        }
+    }
 }
 
 pub async fn current_branch(repo_path: &Path) -> Result<Option<String>> {
@@ -342,5 +446,52 @@ bare
         assert_eq!(FileStatus::Modified.symbol(), "M");
         assert_eq!(FileStatus::Deleted.symbol(), "D");
         assert_eq!(FileStatus::Renamed.symbol(), "R");
+    }
+
+    #[test]
+    fn parse_owner_repo_github_ssh() {
+        assert_eq!(
+            parse_owner_repo("git@github.com:foo/bar.git"),
+            Some(("foo".into(), "bar".into()))
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_github_https() {
+        assert_eq!(
+            parse_owner_repo("https://github.com/foo/bar.git"),
+            Some(("foo".into(), "bar".into()))
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_https_no_dot_git() {
+        assert_eq!(
+            parse_owner_repo("https://github.com/foo/bar"),
+            Some(("foo".into(), "bar".into()))
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_gitlab_nested() {
+        assert_eq!(
+            parse_owner_repo("https://gitlab.com/group/sub/repo.git"),
+            Some(("group-sub".into(), "repo".into()))
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_ssh_url() {
+        assert_eq!(
+            parse_owner_repo("ssh://git@github.com/foo/bar.git"),
+            Some(("foo".into(), "bar".into()))
+        );
+    }
+
+    #[test]
+    fn parse_owner_repo_unknown_returns_none() {
+        assert_eq!(parse_owner_repo(""), None);
+        assert_eq!(parse_owner_repo("not-a-url"), None);
+        assert_eq!(parse_owner_repo("git@host:onlyone"), None);
     }
 }
