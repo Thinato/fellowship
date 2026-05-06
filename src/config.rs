@@ -1,34 +1,50 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq)]
 pub struct Config {
     #[serde(default)]
     pub shell_startup_command: Option<String>,
 }
 
 impl Config {
-    pub fn load() -> Self {
-        let Some(path) = config_path() else {
-            return Self::default();
-        };
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            return Self::default();
-        };
-        match toml::from_str::<Config>(&text) {
-            Ok(cfg) => cfg,
-            Err(e) => {
-                eprintln!("fellowship: failed to parse {}: {e}", path.display());
-                Self::default()
-            }
+    /// Load global config, then merge project-local config on top.
+    /// Local fields override global fields where set.
+    pub fn load(repo: &Path) -> Self {
+        let global = read_config(global_config_path()).unwrap_or_default();
+        let local = read_config(Some(local_config_path(repo))).unwrap_or_default();
+        Self::merge(global, local)
+    }
+
+    fn merge(global: Self, local: Self) -> Self {
+        Self {
+            shell_startup_command: local
+                .shell_startup_command
+                .or(global.shell_startup_command),
         }
     }
 }
 
-pub fn config_path() -> Option<PathBuf> {
+fn read_config(path: Option<PathBuf>) -> Option<Config> {
+    let path = path?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    match toml::from_str::<Config>(&text) {
+        Ok(cfg) => Some(cfg),
+        Err(e) => {
+            eprintln!("fellowship: failed to parse {}: {e}", path.display());
+            None
+        }
+    }
+}
+
+pub fn global_config_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".config/fellowship/config.toml"))
+}
+
+pub fn local_config_path(repo: &Path) -> PathBuf {
+    repo.join(".fellowship/config.toml")
 }
 
 #[allow(dead_code)]
@@ -62,5 +78,27 @@ mod tests {
     fn empty_config_yields_none() {
         let cfg: Config = toml::from_str("").unwrap();
         assert!(cfg.shell_startup_command.is_none());
+    }
+
+    #[test]
+    fn local_overrides_global() {
+        let global = Config {
+            shell_startup_command: Some("global-cmd".into()),
+        };
+        let local = Config {
+            shell_startup_command: Some("local-cmd".into()),
+        };
+        let merged = Config::merge(global, local);
+        assert_eq!(merged.shell_startup_command.as_deref(), Some("local-cmd"));
+    }
+
+    #[test]
+    fn local_unset_falls_back_to_global() {
+        let global = Config {
+            shell_startup_command: Some("global-cmd".into()),
+        };
+        let local = Config::default();
+        let merged = Config::merge(global, local);
+        assert_eq!(merged.shell_startup_command.as_deref(), Some("global-cmd"));
     }
 }

@@ -65,7 +65,7 @@ async fn run(
     let mid_cols = size.width.saturating_sub(28 + 40 + 6).max(20);
     let mid_rows = size.height.saturating_sub(3).max(5);
 
-    let cfg = config::Config::load();
+    let cfg = config::Config::load(&root_path);
     let startup_cmd = cfg.shell_startup_command.clone();
     let pty_pane = TerminalPane::spawn(
         mid_rows,

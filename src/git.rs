@@ -200,24 +200,16 @@ pub async fn current_branch(repo_path: &Path) -> Result<Option<String>> {
 }
 
 pub async fn diff_summary(repo_path: &Path) -> Result<Diff> {
-    let (stat_out, name_out) = tokio::join!(
+    let cwd = repo_path.to_str().unwrap_or(".");
+    let (stat_out, name_out, untracked_out) = tokio::join!(
         Command::new("git")
-            .args([
-                "-C",
-                repo_path.to_str().unwrap_or("."),
-                "diff",
-                "--shortstat",
-                "HEAD"
-            ])
+            .args(["-C", cwd, "diff", "--shortstat", "HEAD"])
             .output(),
         Command::new("git")
-            .args([
-                "-C",
-                repo_path.to_str().unwrap_or("."),
-                "diff",
-                "--name-status",
-                "HEAD"
-            ])
+            .args(["-C", cwd, "diff", "--name-status", "HEAD"])
+            .output(),
+        Command::new("git")
+            .args(["-C", cwd, "ls-files", "--others", "--exclude-standard"])
             .output(),
     );
 
@@ -244,6 +236,16 @@ pub async fn diff_summary(repo_path: &Path) -> Result<Diff> {
                     FileStatus::from_char(status_char),
                     PathBuf::from(actual_path),
                 ));
+            }
+        }
+    }
+
+    if let Ok(out) = untracked_out {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let path = line.trim();
+            if !path.is_empty() {
+                diff.files.push((FileStatus::Untracked, PathBuf::from(path)));
             }
         }
     }
