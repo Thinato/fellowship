@@ -89,4 +89,31 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 4 — `fellowship-ctl` helper binary
+
+- **Started:** 2026-05-06
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - New `[[bin]]` entry in `Cargo.toml` for `fellowship-ctl`. Two binaries now ship from this crate: `fellowship` (TUI) and `fellowship-ctl` (helper).
+  - New file `src/bin/fellowship-ctl.rs` with 6 clap-derived subcommands: `heartbeat`, `log`, `spawn-engineer`, `release-engineer`, `pr-comments`, `bead`.
+  - File-writing subcommands (`heartbeat`, `log`, `spawn-engineer`, `release-engineer`) drop JSON files into `~/.fellowship/runtime/<session>/{state, spawn-requests, release-requests}/` and append to `journal.ndjson`.
+  - Runtime dir resolution order:
+    1. `FELLOWSHIP_RUNTIME_DIR` (explicit override; used by tests).
+    2. `~/.fellowship/runtime/$FELLOWSHIP_SESSION` (fellowship-set when spawning agent PTYs in Phase 5).
+    3. `~/.fellowship/runtime/default` for standalone / pre-Phase-5 runs.
+  - JSON shapes (`HeartbeatRecord`, `SpawnRequest`, `ReleaseRequest`, `JournalEntry`) carry epoch-ms timestamps. Spawn / release requests use UUIDv4 for `request_id`. Watcher in Phase 5 will consume these shapes; they are intentionally local to the binary file for now to avoid premature lib extraction (revisit when Phase 5 wires the watcher into fellowship).
+  - Shell-out subcommands (`pr-comments`, `bead`) invoke `gh api` and `bd` respectively. `pr-comments` queries both the `pulls/.../comments` (inline review comments) and `issues/.../comments` (general PR convo) endpoints and emits one JSONL record per element.
+  - 8 unit tests cover heartbeat (write + overwrite), journal append, spawn-request shape (with branch + single-shot + missing-branch variants), release-request, runtime-dir env override, and a parser smoke that exercises all 9 documented invocations.
+  - `cargo run --bin fellowship-ctl -- --help` prints all 6 subcommands cleanly (verified).
+  - Cargo gate green: 90 tests pass total (82 fellowship + 8 fellowship-ctl).
+  - New deps added: `clap` (derive feature), `uuid` (v4 feature). New dev-dep: `tempfile`.
+- **Notes:**
+  - Unit tests prove the file-writing path end-to-end at the function level. Interactive end-to-end (running the binary against a real `~/.fellowship/runtime/<session>/`) is left for the user to spot-check; the same code paths are exercised by the unit tests.
+  - JSON types stay private to the binary file in this phase. Phase 5 will need fellowship's watcher to deserialize the same shapes — at that point either (a) introduce `src/lib.rs` and move types into a shared `runtime` module, or (b) duplicate the small structs. Decision deferred to Phase 5 when both call sites are in front of us.
+  - `runtime_dir_honors_explicit_override_env_var` test uses `unsafe { std::env::set_var(...) }` because Rust's 2024 edition flagged env mutation as unsafe. The test is single-threaded by virtue of cargo's per-test isolation; if parallelism becomes an issue, gate with `serial_test`.
+  - `pr-comments` deliberately re-runs `gh repo view` per invocation when no `--repo` is passed. Latency is one extra `gh` call per agent invocation; acceptable for v1 and irrelevant in Phase 13 (where the bus replaces the primary path).
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->
