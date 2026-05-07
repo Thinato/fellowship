@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -18,7 +18,7 @@ use crate::panes::members::MembersPane;
 use crate::panes::status::StatusPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
-use crate::runtime::STATE_DIR;
+use crate::runtime::{STATE_DIR, SpawnRequest};
 use crate::surface::{MemberId, Role, Surface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +52,14 @@ pub struct App {
     /// which `~/.fellowship/runtime/<session>/` dir to point `fellowship-ctl`
     /// at when running it from a non-PTY shell.
     pub session_id: String,
+    /// PATH override applied to every member-surface PTY. Includes the
+    /// `~/.fellowship/bin/` shim dir as the first entry.
+    pub agent_path: String,
+    /// Max engineer PTYs allowed concurrently (Phase 9 hardcodes 4; Phase 10
+    /// pulls this from `Config::agents.max_engineers`).
+    pub max_engineers: usize,
+    /// Spawn requests received while at capacity. Drained on engineer release.
+    pub spawn_queue: VecDeque<SpawnRequest>,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
@@ -127,6 +135,9 @@ impl App {
             agent_registry,
             beads: Vec::new(),
             session_id,
+            agent_path: agent_path.to_string(),
+            max_engineers: 4,
+            spawn_queue: VecDeque::new(),
             show_help: false,
             should_quit: false,
             pending_delete: None,
@@ -376,6 +387,12 @@ impl App {
                 debug!(agent = %record.agent_id, status = %record.status, "heartbeat");
                 self.agent_registry.upsert(record);
             }
+            Event::SpawnRequestReceived(req) => {
+                self.handle_spawn_request(req).await;
+            }
+            Event::ReleaseRequestReceived(req) => {
+                self.handle_release_request(req).await;
+            }
             Event::BeadsRefreshed(beads) => {
                 self.beads = beads;
             }
@@ -397,6 +414,100 @@ impl App {
         Ok(())
     }
 
+    /// Smallest engineer instance number not currently in use, starting at 1.
+    fn next_engineer_instance(&self) -> u32 {
+        let used: std::collections::HashSet<u32> =
+            self.members.engineer_instances().into_iter().collect();
+        (1u32..).find(|n| !used.contains(n)).unwrap_or(u32::MAX)
+    }
+
+    fn live_engineer_count(&self) -> usize {
+        self.members.engineer_instances().len()
+    }
+
+    async fn handle_spawn_request(&mut self, req: SpawnRequest) {
+        if self.live_engineer_count() >= self.max_engineers {
+            info!(
+                queued = self.spawn_queue.len() + 1,
+                cap = self.max_engineers,
+                "spawn-engineer queued — engineer pool at capacity"
+            );
+            self.spawn_queue.push_back(req);
+            return;
+        }
+        if let Err(e) = self.spawn_engineer(req).await {
+            error!("spawn-engineer failed: {e:#}");
+        }
+    }
+
+    async fn spawn_engineer(&mut self, req: SpawnRequest) -> Result<()> {
+        let Some(branch) = req.branch.as_ref() else {
+            anyhow::bail!("spawn-engineer requested without --branch (Phase 9 requires it)");
+        };
+        let instance = self.next_engineer_instance();
+        let id = MemberId::engineer(instance);
+
+        // Create the worktree on the active workspace path.
+        let repo = self.last_workspace_path.clone();
+        let worktree_path = git::add_worktree(&repo, branch).await?;
+
+        let banner = format!(
+            "echo '[{}] placeholder — Phase 10 will replace this with a real claude invocation'; \
+             exec bash",
+            id.label()
+        );
+        let (rows, cols) = self.last_term_size;
+        let agent_id_str = id.label();
+        let bead_label = req.request_id.clone();
+        let extra_env: Vec<(&str, &str)> = vec![
+            ("PATH", self.agent_path.as_str()),
+            ("AGENT_ID", agent_id_str.as_str()),
+            ("FELLOWSHIP_SPAWN_REQUEST_ID", bead_label.as_str()),
+        ];
+        let pane = TerminalPane::spawn_with_env(
+            rows,
+            cols,
+            &worktree_path,
+            self.event_tx.clone(),
+            Some(&banner),
+            &extra_env,
+        )?;
+        self.terminals.insert(Surface::Member(id), pane);
+        self.members.add_member(id);
+
+        info!(
+            engineer = %id.label(),
+            branch = %branch,
+            worktree = %worktree_path.display(),
+            "engineer spawned"
+        );
+        let _ = self.event_tx.send(Event::WorktreesRefreshed(
+            git::list_worktrees(&repo).await.unwrap_or_default(),
+        ));
+        Ok(())
+    }
+
+    async fn handle_release_request(&mut self, req: crate::runtime::ReleaseRequest) {
+        let Some(id) = parse_engineer_id(&req.agent_id) else {
+            error!(agent_id = %req.agent_id, "release-engineer rejected: not an engineer id");
+            return;
+        };
+        let surface = Surface::Member(id);
+        if let Some(mut pane) = self.terminals.remove(&surface) {
+            pane.shutdown();
+        }
+        self.members.remove_member(id);
+        info!(engineer = %id.label(), "engineer released");
+
+        // Drain one queued spawn request if any (and we now have headroom).
+        if self.live_engineer_count() < self.max_engineers
+            && let Some(next) = self.spawn_queue.pop_front()
+            && let Err(e) = self.spawn_engineer(next).await
+        {
+            error!("draining queued spawn-engineer failed: {e:#}");
+        }
+    }
+
     pub fn resize_terminal(&mut self, area: ratatui::layout::Rect) {
         let rows = area.height;
         let cols = area.width;
@@ -404,5 +515,36 @@ impl App {
         if let Some(t) = self.active_terminal_mut() {
             let _ = t.resize(rows, cols);
         }
+    }
+}
+
+/// Parse `engineer-<n>` into a `MemberId`. Returns `None` for any other shape
+/// — singletons (pm, orchestrator, …) cannot be released this way.
+fn parse_engineer_id(s: &str) -> Option<MemberId> {
+    let n: u32 = s.strip_prefix("engineer-")?.parse().ok()?;
+    Some(MemberId::engineer(n))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_engineer_id_accepts_valid_shape() {
+        assert_eq!(parse_engineer_id("engineer-1"), Some(MemberId::engineer(1)));
+        assert_eq!(
+            parse_engineer_id("engineer-42"),
+            Some(MemberId::engineer(42))
+        );
+    }
+
+    #[test]
+    fn parse_engineer_id_rejects_singleton_and_garbage() {
+        assert!(parse_engineer_id("pm").is_none());
+        assert!(parse_engineer_id("orchestrator").is_none());
+        assert!(parse_engineer_id("engineer-").is_none());
+        assert!(parse_engineer_id("engineer-x").is_none());
+        assert!(parse_engineer_id("engineer").is_none());
+        assert!(parse_engineer_id("").is_none());
     }
 }

@@ -71,6 +71,37 @@ impl MembersPane {
         self.members.get(self.selected).copied()
     }
 
+    /// Add an engineer to the bottom of the list if not already present.
+    pub fn add_member(&mut self, id: MemberId) {
+        if !self.members.contains(&id) {
+            self.members.push(id);
+        }
+    }
+
+    /// Remove a member from the list. If `selected` was on or past the
+    /// removed entry it slides up to stay valid.
+    pub fn remove_member(&mut self, id: MemberId) {
+        if let Some(idx) = self.members.iter().position(|m| *m == id) {
+            self.members.remove(idx);
+            if self.active == Some(id) {
+                self.active = None;
+            }
+            if self.selected >= self.members.len() && !self.members.is_empty() {
+                self.selected = self.members.len() - 1;
+            }
+            self.list_state.select(Some(self.selected));
+        }
+    }
+
+    /// All currently-tracked engineer ids (Role::Engineer).
+    pub fn engineer_instances(&self) -> Vec<u32> {
+        self.members
+            .iter()
+            .filter(|m| matches!(m.role, Role::Engineer))
+            .map(|m| m.instance)
+            .collect()
+    }
+
     /// Returns `Some(Event)` when the keypress should escalate to the App
     /// (currently only `Enter`, which requests a surface switch).
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> Option<Event> {
@@ -217,5 +248,41 @@ mod tests {
         assert_eq!(m.active, Some(pm));
         m.set_active_member(None);
         assert!(m.active.is_none());
+    }
+
+    #[test]
+    fn add_member_appends_and_dedupes() {
+        let mut m = MembersPane::new();
+        let len_before = m.members.len();
+        let e1 = MemberId::engineer(1);
+        m.add_member(e1);
+        assert_eq!(m.members.len(), len_before + 1);
+        assert_eq!(*m.members.last().unwrap(), e1);
+        // Idempotent: re-adding the same id is a no-op.
+        m.add_member(e1);
+        assert_eq!(m.members.len(), len_before + 1);
+    }
+
+    #[test]
+    fn remove_member_clears_active_and_clamps_selection() {
+        let mut m = MembersPane::new();
+        let e1 = MemberId::engineer(1);
+        m.add_member(e1);
+        m.set_active_member(Some(e1));
+        m.selected = m.members.len() - 1;
+        m.remove_member(e1);
+        assert!(m.active.is_none());
+        assert!(m.selected < m.members.len());
+        assert!(!m.members.contains(&e1));
+    }
+
+    #[test]
+    fn engineer_instances_returns_only_engineer_role_ids() {
+        let mut m = MembersPane::new();
+        m.add_member(MemberId::engineer(1));
+        m.add_member(MemberId::engineer(3));
+        let mut got = m.engineer_instances();
+        got.sort();
+        assert_eq!(got, vec![1, 3]);
     }
 }

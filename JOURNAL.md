@@ -248,4 +248,38 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 9 — Engineer spawn protocol
+
+- **Started:** 2026-05-07
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - **Watcher consumes intent files at-most-once.** `spawn_runtime_watcher` now also watches `<runtime>/spawn-requests/` and `<runtime>/release-requests/`. On any new `*.json` write under those dirs the watcher reads the file, parses it, **deletes it**, then emits `Event::SpawnRequestReceived(SpawnRequest)` or `Event::ReleaseRequestReceived(ReleaseRequest)`. The delete-after-parse pattern guarantees a request is processed once even when notify fires duplicate events for the same write (common on macOS).
+  - **New event variants** `Event::SpawnRequestReceived(SpawnRequest)` and `Event::ReleaseRequestReceived(ReleaseRequest)` (plumbed through `App::handle_event`).
+  - **App engineer pool plumbing.** New fields on `App`:
+    - `agent_path: String` — PATH override (with safe-git shim) injected into every member-surface PTY.
+    - `max_engineers: usize` — Phase 9 hardcodes 4. Phase 10 wires this from `Config::agents.max_engineers`.
+    - `spawn_queue: VecDeque<SpawnRequest>` — overflow queue when at capacity.
+  - **`App::handle_spawn_request`** checks `live_engineer_count() >= max_engineers`. At/over cap → push request onto `spawn_queue` and log `info!`. Under cap → call `spawn_engineer`.
+  - **`App::spawn_engineer`** flow:
+    1. Require `req.branch` (Phase 9 enforces; Phase 10 may auto-derive from a claimed bead).
+    2. Allocate the smallest unused `engineer-K` instance via `next_engineer_instance` (1, 2, 3, …).
+    3. Run `git worktree add` against `last_workspace_path` for the requested branch — reuses Phase 0–7 worktree path scheme `$HOME/.fellowship/worktrees/<owner>/<repo>/<branch>`.
+    4. Spawn a `TerminalPane` rooted at the new worktree with env `[("PATH", agent_path), ("AGENT_ID", "engineer-K"), ("FELLOWSHIP_SPAWN_REQUEST_ID", req.request_id)]`. Banner is the Phase 3 placeholder shape; Phase 10 swaps for real `claude`.
+    5. Insert under `Surface::Member(MemberId::engineer(K))` in `App.terminals` and add to `MembersPane.members` so the Members pane renders it.
+    6. Refresh worktrees list so the Workspaces pane sees the new entry too.
+    7. `info!` the result.
+  - **`App::handle_release_request`** parses the agent_id with `parse_engineer_id` (rejects singletons), removes the PTY (calls `shutdown`) and member entry, and **drains one queued spawn request** if any so the queue makes progress without external nudging.
+  - **`MembersPane` API additions** — `add_member`, `remove_member` (clears active marker if removed; clamps selection), and `engineer_instances` for the allocator.
+  - **5 new unit tests** — `parse_engineer_id` accepts `engineer-<n>` and rejects singletons / garbage / empty (2 tests); `add_member` appends + dedupes; `remove_member` clears active and clamps selection; `engineer_instances` returns only Engineer-role ids.
+  - Cargo gate green: 133 tests total — 126 lib (was 121; +5) + 7 fellowship-ctl bin + 0 integration.
+- **Notes:**
+  - **`max_engineers = 4` hardcoded** for Phase 9. Plan §3.5 / §5 wire this from config in Phase 10. Beyond cap, requests queue (FIFO) and drain on release.
+  - **Branch is required** for Phase 9. The plan envisions Orchestrator deriving `feat/bead-<id>` after engineer self-claims a bead, but the spawn protocol itself stays simple by requiring the branch upfront. Phase 10 can add a `--auto-branch` flag that derives a placeholder name like `feat/engineer-<n>-scratch` if needed.
+  - **Watcher delete-after-parse.** macOS fseventsd often fires multiple Modify events for a single write (especially from editors that write+rename). Without consume-and-delete, fellowship would spawn the same engineer twice. The deleted file is the canonical "this request was handled" signal.
+  - **`fellowship-ctl spawn-engineer` from Phase 4** is unchanged. It still drops `<runtime>/spawn-requests/<uuid>.json`; the watcher now actually consumes those.
+  - **Status pane / journal updates** are not retroactive: a spawn that happens before the watcher fires its first event won't be replayed. Acceptable since fellowship is the only writer of spawn-request files in normal operation.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

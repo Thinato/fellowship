@@ -11,13 +11,19 @@ use notify::{Event as NotifyEvent, EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::Event;
-use crate::runtime::{HeartbeatRecord, JOURNAL_FILE, STATE_DIR, journal_path, read_journal};
+use crate::runtime::{
+    HeartbeatRecord, JOURNAL_FILE, RELEASE_REQUEST_DIR, ReleaseRequest, SPAWN_REQUEST_DIR,
+    STATE_DIR, SpawnRequest, journal_path, read_journal,
+};
 
 /// Spawn a notify watcher rooted at `runtime_root`. Watches:
-/// - `<runtime_root>/state/` — every heartbeat JSON write fires
-///   `Event::AgentHeartbeat`.
-/// - `<runtime_root>/journal.ndjson` — every append fires
-///   `Event::JournalSnapshot` with the full re-parsed contents.
+/// - `<runtime_root>/state/` — heartbeats → `Event::AgentHeartbeat`.
+/// - `<runtime_root>/journal.ndjson` — log appends → `Event::JournalSnapshot`.
+/// - `<runtime_root>/spawn-requests/` — spawn intents →
+///   `Event::SpawnRequestReceived`. The intent file is consumed (deleted)
+///   before the event fires so duplicate notify events don't replay.
+/// - `<runtime_root>/release-requests/` — release intents →
+///   `Event::ReleaseRequestReceived` (consumed identically).
 ///
 /// Returns the watcher; drop it to stop watching. Callers should keep it
 /// alive in `App` (or `main::run`) so it lives as long as the TUI session.
@@ -26,8 +32,11 @@ pub fn spawn_runtime_watcher(
     tx: UnboundedSender<Event>,
 ) -> Result<notify::RecommendedWatcher> {
     let state_dir = runtime_root.join(STATE_DIR);
-    std::fs::create_dir_all(&state_dir)
-        .with_context(|| format!("mkdir -p {}", state_dir.display()))?;
+    let spawn_dir = runtime_root.join(SPAWN_REQUEST_DIR);
+    let release_dir = runtime_root.join(RELEASE_REQUEST_DIR);
+    for d in [&state_dir, &spawn_dir, &release_dir] {
+        std::fs::create_dir_all(d).with_context(|| format!("mkdir -p {}", d.display()))?;
+    }
     // Touch the journal file so notify has something to watch from t=0.
     let journal = journal_path(runtime_root);
     if !journal.exists() {
@@ -35,6 +44,8 @@ pub fn spawn_runtime_watcher(
     }
 
     let runtime_root_owned = runtime_root.to_path_buf();
+    let spawn_dir_owned = spawn_dir.clone();
+    let release_dir_owned = release_dir.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<NotifyEvent>| {
         let Ok(event) = res else { return };
         if !matches!(
@@ -47,8 +58,24 @@ pub fn spawn_runtime_watcher(
         for path in &event.paths {
             if path.ends_with(JOURNAL_FILE) {
                 journal_dirty = true;
-            } else if is_json_file(path)
-                && let Some(record) = read_heartbeat(path)
+                continue;
+            }
+            if !is_json_file(path) {
+                continue;
+            }
+            if path.starts_with(&spawn_dir_owned) {
+                if let Some(req) = consume_spawn_request(path)
+                    && tx.send(Event::SpawnRequestReceived(req)).is_err()
+                {
+                    return;
+                }
+            } else if path.starts_with(&release_dir_owned) {
+                if let Some(req) = consume_release_request(path)
+                    && tx.send(Event::ReleaseRequestReceived(req)).is_err()
+                {
+                    return;
+                }
+            } else if let Some(record) = read_heartbeat(path)
                 && tx.send(Event::AgentHeartbeat(record)).is_err()
             {
                 return;
@@ -69,8 +96,32 @@ pub fn spawn_runtime_watcher(
     watcher
         .watch(&journal, RecursiveMode::NonRecursive)
         .with_context(|| format!("watching {}", journal.display()))?;
+    watcher
+        .watch(&spawn_dir, RecursiveMode::NonRecursive)
+        .with_context(|| format!("watching {}", spawn_dir.display()))?;
+    watcher
+        .watch(&release_dir, RecursiveMode::NonRecursive)
+        .with_context(|| format!("watching {}", release_dir.display()))?;
 
     Ok(watcher)
+}
+
+/// Read + delete a spawn-request file in one shot. Returns the parsed request
+/// if both succeed. The delete-after-parse pattern guarantees a request is
+/// processed at-most-once even if notify fires multiple events for the same
+/// write (which it sometimes does on macOS).
+fn consume_spawn_request(path: &Path) -> Option<SpawnRequest> {
+    let bytes = std::fs::read(path).ok()?;
+    let req: SpawnRequest = serde_json::from_slice(&bytes).ok()?;
+    let _ = std::fs::remove_file(path);
+    Some(req)
+}
+
+fn consume_release_request(path: &Path) -> Option<ReleaseRequest> {
+    let bytes = std::fs::read(path).ok()?;
+    let req: ReleaseRequest = serde_json::from_slice(&bytes).ok()?;
+    let _ = std::fs::remove_file(path);
+    Some(req)
 }
 
 fn is_json_file(path: &Path) -> bool {
