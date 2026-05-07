@@ -17,10 +17,12 @@ use fellowship::agents::watcher;
 use fellowship::app::App;
 use fellowship::beads;
 use fellowship::config;
+use fellowship::debug_log;
 use fellowship::event::Event;
 use fellowship::panes::terminal::TerminalPane;
 use fellowship::runtime;
 use fellowship::ui;
+use tracing::{error, info};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -42,13 +44,27 @@ async fn main() -> Result<()> {
     runtime::ensure_subdir(&runtime_root, runtime::SPAWN_REQUEST_DIR)?;
     runtime::ensure_subdir(&runtime_root, runtime::RELEASE_REQUEST_DIR)?;
 
+    let log_path = debug_log::init(&runtime_root)?;
+    info!(
+        session = %session_id,
+        runtime_root = %runtime_root.display(),
+        log = %log_path.display(),
+        "fellowship boot"
+    );
+
+    // Publish CURRENT_SESSION marker so `fellowship-ctl` invocations from
+    // shells outside this fellowship instance pick the right runtime dir.
+    if let Err(e) = runtime::write_current_session(&session_id) {
+        error!("failed to write CURRENT_SESSION marker: {e}");
+    }
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run(&mut terminal, root_path, runtime_root).await;
+    let result = run(&mut terminal, root_path, runtime_root, session_id.clone()).await;
 
     disable_raw_mode()?;
     execute!(
@@ -58,6 +74,11 @@ async fn main() -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
+    if let Err(e) = runtime::clear_current_session(&session_id) {
+        error!("failed to clear CURRENT_SESSION marker: {e}");
+    }
+    info!(session = %session_id, "fellowship shutdown");
+
     result
 }
 
@@ -65,6 +86,7 @@ async fn run(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     root_path: PathBuf,
     runtime_root: PathBuf,
+    session_id: String,
 ) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
@@ -86,6 +108,7 @@ async fn run(
     let mut app = App::new(
         root_path.clone(),
         &runtime_root,
+        session_id,
         pty_pane,
         event_tx.clone(),
         startup_cmd,
@@ -111,17 +134,31 @@ async fn run(
     });
 
     // Background beads poll every 3 seconds. `bd` errors (e.g. not initialized
-    // in the repo, binary missing) are silently swallowed — fellowship boots
-    // with agents off in that case and the user can `bd init` later.
+    // in the repo, binary missing) are logged once-per-failure-type and the
+    // tick continues so a later `bd init` recovers without restarting.
     let beads_tx = event_tx.clone();
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(3));
+        let mut last_error: Option<String> = None;
         loop {
             interval.tick().await;
-            if let Ok(beads) = beads::list_beads().await
-                && beads_tx.send(Event::BeadsRefreshed(beads)).is_err()
-            {
-                break;
+            match beads::list_beads().await {
+                Ok(beads) => {
+                    if last_error.is_some() {
+                        info!(count = beads.len(), "beads recovered");
+                        last_error = None;
+                    }
+                    if beads_tx.send(Event::BeadsRefreshed(beads)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("{e:#}");
+                    if last_error.as_deref() != Some(msg.as_str()) {
+                        error!(error = %msg, "bd list --json failed");
+                        last_error = Some(msg);
+                    }
+                }
             }
         }
     });

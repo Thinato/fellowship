@@ -9,6 +9,7 @@ pub mod agents;
 pub mod app;
 pub mod beads;
 pub mod config;
+pub mod debug_log;
 pub mod event;
 pub mod gh;
 pub mod git;

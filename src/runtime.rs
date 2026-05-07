@@ -67,19 +67,67 @@ pub fn now_ms() -> u128 {
 /// 1. `FELLOWSHIP_RUNTIME_DIR` — explicit override (used by tests).
 /// 2. `~/.fellowship/runtime/$FELLOWSHIP_SESSION` — fellowship sets the env var
 ///    when spawning PTYs; agents inherit it.
-/// 3. `~/.fellowship/runtime/default` — fallback for ad-hoc `fellowship-ctl`
-///    invocations outside a fellowship session.
+/// 3. `~/.fellowship/runtime/$(read CURRENT_SESSION)` — fallback for shells
+///    started outside fellowship (e.g. user running `fellowship-ctl` from a
+///    second terminal). The running fellowship instance writes its uuid to
+///    `~/.fellowship/runtime/CURRENT_SESSION` on boot.
+/// 4. `~/.fellowship/runtime/default` — last-ditch fallback when no fellowship
+///    is running.
 pub fn runtime_dir() -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("FELLOWSHIP_RUNTIME_DIR") {
         return Ok(PathBuf::from(p));
     }
     let home =
         std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME env var is not set"))?;
-    let session = std::env::var("FELLOWSHIP_SESSION").unwrap_or_else(|_| "default".to_string());
+    let session = std::env::var("FELLOWSHIP_SESSION")
+        .ok()
+        .or_else(read_current_session)
+        .unwrap_or_else(|| "default".to_string());
     Ok(PathBuf::from(home)
         .join(".fellowship")
         .join("runtime")
         .join(session))
+}
+
+/// Path to the marker file that records the currently-running fellowship
+/// session uuid. Lives at `~/.fellowship/runtime/CURRENT_SESSION`.
+pub fn current_session_marker_path() -> Result<PathBuf> {
+    let home =
+        std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME env var is not set"))?;
+    Ok(PathBuf::from(home)
+        .join(".fellowship")
+        .join("runtime")
+        .join("CURRENT_SESSION"))
+}
+
+pub fn read_current_session() -> Option<String> {
+    let path = current_session_marker_path().ok()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let s = text.trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+pub fn write_current_session(session: &str) -> Result<()> {
+    let path = current_session_marker_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("mkdir -p {}", parent.display()))?;
+    }
+    std::fs::write(&path, session).with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+/// Remove the CURRENT_SESSION marker only if it still points at `expected`.
+/// Avoids racing with a second fellowship instance that may have started
+/// between our boot and quit.
+pub fn clear_current_session(expected: &str) -> Result<()> {
+    let path = current_session_marker_path()?;
+    if let Ok(text) = std::fs::read_to_string(&path)
+        && text.trim() == expected
+    {
+        let _ = std::fs::remove_file(&path);
+    }
+    Ok(())
 }
 
 pub fn ensure_subdir(root: &Path, name: &str) -> Result<PathBuf> {

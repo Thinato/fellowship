@@ -111,6 +111,27 @@ impl StatusPane {
     }
 
     fn render_kanban(&self, frame: &mut Frame, area: Rect, beads: &[Bead]) {
+        if beads.is_empty() {
+            let hint = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  No beads yet.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Run `bd init` and `bd create \"…\"` in this repo,",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "  or check `bd doctor` if you expected to see some.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(hint), area);
+            return;
+        }
+
         let columns = [
             ("OPEN", Status::Open),
             ("IN-PROG", Status::InProgress),
@@ -141,6 +162,32 @@ impl StatusPane {
     }
 
     fn render_journal(&self, frame: &mut Frame, area: Rect) {
+        if self.journal_tail.is_empty() {
+            let hint = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Journal is empty.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Agents append entries via:",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(Span::styled(
+                    "    fellowship-ctl log <agent-id> \"<message>\"",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Press `J` to flip back to the beads view.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(hint), area);
+            return;
+        }
+
         let filter_hint = match &self.journal_filter {
             Some(id) => format!(" [filter: {}]  ", id),
             None => String::from(" [no filter]  "),

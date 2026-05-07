@@ -149,6 +149,18 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
     ));
 
+    // Short session id surfaced for debugging — when the user runs
+    // `fellowship-ctl` from a non-PTY shell they need to know which session
+    // dir to write into. The CURRENT_SESSION marker auto-resolves it, but
+    // surfacing the id avoids a second `cat` to discover it.
+    let short = app.session_id.get(..8).unwrap_or(app.session_id.as_str());
+    spans.push(Span::styled(
+        format!("  session={short}"),
+        Style::default()
+            .fg(ratatui::style::Color::DarkGray)
+            .bg(theme::STATUS_BG),
+    ));
+
     if prefix_indicator {
         spans.push(Span::styled(
             "  [PREFIX]",

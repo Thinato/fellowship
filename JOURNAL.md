@@ -183,4 +183,37 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 7.5 — Smoke fixes (CURRENT_SESSION discovery, debug log, empty placeholders)
+
+- **Started:** 2026-05-07
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - User smoke against Phases 1–7 surfaced three pain points; this followup addresses them in one commit on top of `11c4431` (Phase 7).
+
+  **1. Heartbeats from a non-PTY shell wrote to the wrong dir.**
+  - Root cause: `fellowship-ctl` resolved `runtime_dir` from `FELLOWSHIP_SESSION` env var, which is only set inside fellowship-spawned PTYs. Any shell started outside fellowship landed at `~/.fellowship/runtime/default/`. The running fellowship's watcher never saw those events.
+  - Fix: fellowship now writes its session uuid to `~/.fellowship/runtime/CURRENT_SESSION` on boot and removes it on quit (only if the file still points at the same uuid; multi-instance safe). `runtime::runtime_dir` resolution adds a third tier between env-var and "default": read the marker file. New helpers `current_session_marker_path`, `read_current_session`, `write_current_session`, `clear_current_session` in `src/runtime.rs`.
+
+  **2. No way to see what fellowship was doing under the hood.**
+  - Fix: new module `src/debug_log.rs` initializes a global `tracing` subscriber writing to `<runtime_root>/fellowship.log`. `main` calls it at boot. Replaced existing `eprintln!` sites in `src/app.rs` (worktree add/remove failures) and `src/config.rs` (config parse failures) with `tracing::error!`. Added `debug!` on every agent heartbeat received and `info!` on member-surface switches and beads-poll recovery. Beads polling errors are now logged once-per-failure-type instead of silently dropped, and recovery is announced.
+  - Tail with `tail -F ~/.fellowship/runtime/<session>/fellowship.log` while fellowship is running.
+
+  **3. Empty kanban / journal had no hint.**
+  - Fix: `panes/status.rs` `render_kanban` and `render_journal` now show a dimmed multi-line hint when their respective data is empty, with concrete commands the user can run (`bd init` / `bd create` for kanban, `fellowship-ctl log` for journal).
+
+  **4. Session uuid was invisible to the user.**
+  - Fix: status bar now appends `  session=<first-8-chars>` so the user can see at a glance which runtime dir to point ctl at. The CURRENT_SESSION marker auto-resolves it for most cases, but the visible id helps when running ctl with an explicit `FELLOWSHIP_SESSION=...` override.
+
+  - **App.session_id field** added; threaded through `App::new(... session_id: String, ...)` and `main::run`. UI status bar reads from `app.session_id`.
+  - New deps: `tracing = "0.1"`, `tracing-subscriber = "0.3"` (with the `fmt` feature).
+  - Cargo gate green: 112 tests still pass (no new tests this commit; behavior is covered by manual smoke + the existing runtime/registry/watcher tests).
+- **Notes:**
+  - The "fallback" tier in `runtime_dir` (CURRENT_SESSION marker → default) was flagged by the slop hook; documented in code as the architectural fix to the user's smoke-test failure (heartbeats writing to `default/` instead of the live session). Single resolution chain, deterministic, and the marker is removed on clean exit.
+  - **Filter UX clarification:** the user reported "`f` does nothing" in journal view. Behavior is correct given an empty journal — `f` latches onto the most-recent entry's agent, and there are no entries when no agent has called `fellowship-ctl log`. The new empty-journal hint surfaces this. After the CURRENT_SESSION fix, `fellowship-ctl log <id> "msg"` from any shell will now populate the journal and `f` will start latching.
+  - tracing-subscriber's `try_init` is intentionally non-fatal: subsequent calls in the same process return `Err` but we `let _ =` it so duplicate inits don't crash the TUI.
+  - The session-id status-bar substring uses `.get(..8)` (byte indexing) rather than `.chars().take(8)`. UUIDs are pure ASCII so byte slicing is safe; if we ever swap uuid for a non-ASCII session id this needs revisiting.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

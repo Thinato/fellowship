@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "fellowship",
+  "project_id": "a7abc4d9-3e62-4375-b7ef-d03630adfa26"
+}

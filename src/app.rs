@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
+use tracing::{debug, error, info};
 
 use crate::agents::registry::AgentRegistry;
 use crate::beads::Bead;
@@ -46,6 +47,11 @@ pub struct App {
     pub right_view: RightView,
     pub agent_registry: AgentRegistry,
     pub beads: Vec<Bead>,
+    /// Per-session uuid set by `main` and propagated to spawned PTYs via
+    /// `FELLOWSHIP_SESSION`. Surfaced in the status bar so the user knows
+    /// which `~/.fellowship/runtime/<session>/` dir to point `fellowship-ctl`
+    /// at when running it from a non-PTY shell.
+    pub session_id: String,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
@@ -67,6 +73,7 @@ impl App {
     pub fn new(
         root_path: PathBuf,
         runtime_root: &std::path::Path,
+        session_id: String,
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
         startup_cmd: Option<String>,
@@ -109,6 +116,7 @@ impl App {
             right_view: RightView::Git,
             agent_registry,
             beads: Vec::new(),
+            session_id,
             show_help: false,
             should_quit: false,
             pending_delete: None,
@@ -282,6 +290,7 @@ impl App {
                 let _ = self.event_tx.send(Event::SwitchWorkspace(path));
             }
             Event::SwitchSurface(Surface::Member(id)) => {
+                info!(member = %id.label(), "switch to member surface");
                 let surface = Surface::Member(id);
                 self.active_surface = surface.clone();
                 self.members.set_active_member(Some(id));
@@ -311,7 +320,7 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            eprintln!("git worktree remove failed: {e}");
+                            error!("git worktree remove failed: {e}");
                         }
                     }
                 });
@@ -328,7 +337,7 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            eprintln!("git worktree add failed: {e}");
+                            error!("git worktree add failed: {e}");
                         }
                     }
                 });
@@ -354,6 +363,7 @@ impl App {
                 });
             }
             Event::AgentHeartbeat(record) => {
+                debug!(agent = %record.agent_id, status = %record.status, "heartbeat");
                 self.agent_registry.upsert(record);
             }
             Event::BeadsRefreshed(beads) => {
