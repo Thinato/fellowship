@@ -1,3 +1,4 @@
+use crate::beads::Bead;
 use crate::gh::PrInfo;
 use crate::git::{Diff, Worktree};
 use crate::runtime::HeartbeatRecord;
@@ -20,6 +21,8 @@ pub enum Event {
     /// Emitted by the runtime watcher whenever a heartbeat JSON file under
     /// `<runtime>/state/` is written. Carries the parsed record.
     AgentHeartbeat(HeartbeatRecord),
+    /// Emitted by the beads poller every ~3s with the latest snapshot.
+    BeadsRefreshed(Vec<Bead>),
     CreateWorktree(String),
     PromptDeleteWorktree(PathBuf, String),
     DeleteWorktree(PathBuf),

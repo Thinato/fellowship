@@ -15,6 +15,7 @@ use tokio::time;
 
 use fellowship::agents::watcher;
 use fellowship::app::App;
+use fellowship::beads;
 use fellowship::config;
 use fellowship::event::Event;
 use fellowship::panes::terminal::TerminalPane;
@@ -104,6 +105,22 @@ async fn run(
         loop {
             interval.tick().await;
             if tick_tx.send(Event::GitRefresh).is_err() {
+                break;
+            }
+        }
+    });
+
+    // Background beads poll every 3 seconds. `bd` errors (e.g. not initialized
+    // in the repo, binary missing) are silently swallowed — fellowship boots
+    // with agents off in that case and the user can `bd init` later.
+    let beads_tx = event_tx.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(3));
+        loop {
+            interval.tick().await;
+            if let Ok(beads) = beads::list_beads().await
+                && beads_tx.send(Event::BeadsRefreshed(beads)).is_err()
+            {
                 break;
             }
         }

@@ -6,6 +6,7 @@ use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
 use crate::agents::registry::AgentRegistry;
+use crate::beads::Bead;
 use crate::event::Event;
 use crate::gh;
 use crate::git;
@@ -34,6 +35,7 @@ pub struct App {
     pub terminals: HashMap<Surface, TerminalPane>,
     pub git_status: GitStatusPane,
     pub agent_registry: AgentRegistry,
+    pub beads: Vec<Bead>,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
@@ -94,6 +96,7 @@ impl App {
             terminals,
             git_status: GitStatusPane::new(root_path.clone()),
             agent_registry,
+            beads: Vec::new(),
             show_help: false,
             should_quit: false,
             pending_delete: None,
@@ -327,6 +330,9 @@ impl App {
             }
             Event::AgentHeartbeat(record) => {
                 self.agent_registry.upsert(record);
+            }
+            Event::BeadsRefreshed(beads) => {
+                self.beads = beads;
             }
             Event::DiffUpdated(diff) => {
                 self.git_status.update_diff(diff);

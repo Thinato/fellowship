@@ -139,4 +139,25 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 6 — Beads integration module
+
+- **Started:** 2026-05-06
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - New `src/beads.rs` lib module: `BdRawIssue` (deserializer for `bd list --json`), canonical `Bead` struct + `Status` enum, `From<BdRawIssue> for Bead`, `parse_bd_list`, `list_beads_with(bd_path: &str)`, and `list_beads()` (defaults to `bd` on PATH).
+  - **Schema insulation (Q1 from Phase 6 prompt):** `BdRawIssue` mirrors the upstream `bd` JSON shape with `#[serde(default)]` on every field; `Bead` is the fellowship-internal canonical shape. Drift tolerated; new upstream fields are silently ignored. `serde_json` lenient by default.
+  - `Status::parse` recognizes `open`, `in_progress`/`in-progress`, `in_review`/`in-review`, `closed`/`done`; everything else → `Status::Other`.
+  - 7 unit tests: `Status::parse` matrix, empty-array, blank-stdout, full mapping, unknown-field tolerance, `list_beads_with` happy path with a fake `bd` shell script (chmod 0o755, no PATH munging — invoked by absolute path), `list_beads_with` propagating non-zero exit + stderr.
+  - **App wiring:** new field `App.beads: Vec<Bead>`. New event variant `Event::BeadsRefreshed(Vec<Bead>)` handled by `App::handle_event` → assigns into `self.beads`.
+  - **Polling task:** `main::run` spawns a tokio interval task ticking every 3s; on each tick calls `beads::list_beads()` and forwards the result via `Event::BeadsRefreshed`. `bd` errors (binary missing, repo not initialized, etc.) are silently dropped — fellowship boots with no beads visible and the user can `bd init` later. Loop exits when the receiver drops.
+  - Cargo gate green: 106 tests total — 99 lib (was 92; +7 beads) + 7 fellowship-ctl bin + 0 integration.
+- **Notes:**
+  - Tests construct fake `bd` binaries by writing a shell script into a `tempfile::TempDir`, chmod-ing 0o755, and passing the absolute path to `list_beads_with`. No PATH mutation, so tests stay parallel-safe under cargo's default test runner.
+  - Once a real `bd` install is available in a session, the polling task picks up immediately. Real-bd compatibility check (does `bd list --json` actually emit the fields we read?) is deferred to Phase 12 end-to-end smoke; the schema insulation in `BdRawIssue` is the hedge against drift.
+  - The `BdRawIssue::issue_type` field is renamed via `#[serde(rename = "type")]` to avoid clashing with Rust's `type` keyword. Plan §3.2 uses the term "kind" in label conventions but the upstream JSON field is "type"; downstream we expose it as `issue_type`.
+  - Plan §3.2 also calls for `bd ready --label role:engineer --json` for engineer self-claim; that's a Phase 9 concern (engineer pool). Phase 6 ships only `bd list --json`. The wrapper is identical except for argv.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->
