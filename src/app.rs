@@ -14,7 +14,7 @@ use crate::panes::gitstatus::GitStatusPane;
 use crate::panes::members::MembersPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
-use crate::surface::Surface;
+use crate::surface::{MemberId, Role, Surface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneId {
@@ -54,12 +54,29 @@ impl App {
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
         startup_cmd: Option<String>,
-    ) -> Self {
+    ) -> Result<Self> {
         let last_term_size = terminal.size();
+        let (rows, cols) = last_term_size;
         let mut terminals = HashMap::new();
         let initial_surface = Surface::Workspace(root_path.clone());
         terminals.insert(initial_surface.clone(), terminal);
-        Self {
+
+        // Phase 3: spawn one PTY per singleton role so switching to a Member
+        // surface from the Members pane has something to display. The banner
+        // command runs once and `exec bash` keeps the shell alive afterward.
+        // Phase 10 replaces the banner with the real `claude` invocation.
+        for role in [Role::Pm, Role::Orchestrator, Role::Architect, Role::Recon] {
+            let id = MemberId::singleton(role);
+            let banner = format!(
+                "echo '[{}] placeholder — real prompt lands in Phase 10'; exec bash",
+                role.as_str()
+            );
+            let pane =
+                TerminalPane::spawn(rows, cols, &root_path, event_tx.clone(), Some(&banner))?;
+            terminals.insert(Surface::Member(id), pane);
+        }
+
+        Ok(Self {
             focus: PaneId::Terminal,
             input_mode: InputMode::Normal,
             members: MembersPane::new(),
@@ -76,7 +93,7 @@ impl App {
             layout: PaneLayout::default_horizontal(),
             startup_cmd,
             keymap: Keymap::new(default_bindings()),
-        }
+        })
     }
 
     fn execute_command(&mut self, cmd: &str) {
@@ -184,7 +201,9 @@ impl App {
                 // git status pane has no key handling currently
             }
             PaneId::Members => {
-                self.members.handle_key(key);
+                if let Some(event) = self.members.handle_key(key) {
+                    let _ = self.event_tx.send(event);
+                }
             }
         }
         Ok(())
@@ -201,6 +220,7 @@ impl App {
                 self.last_workspace_path = path.clone();
                 self.git_status.root_path = path.clone();
                 self.workspaces.select_path(&path);
+                self.members.set_active_member(None);
                 self.focus = PaneId::Terminal;
                 let (rows, cols) = self.last_term_size;
                 if !self.terminals.contains_key(&surface) {
@@ -216,6 +236,21 @@ impl App {
                     let _ = t.resize(rows, cols);
                 }
                 let _ = self.event_tx.send(Event::GitRefresh);
+            }
+            Event::SwitchSurface(Surface::Workspace(path)) => {
+                // Delegate to the dedicated workspace flow so its side effects
+                // (git_status root, GitRefresh, list select) still fire.
+                let _ = self.event_tx.send(Event::SwitchWorkspace(path));
+            }
+            Event::SwitchSurface(Surface::Member(id)) => {
+                let surface = Surface::Member(id);
+                self.active_surface = surface.clone();
+                self.members.set_active_member(Some(id));
+                self.focus = PaneId::Terminal;
+                let (rows, cols) = self.last_term_size;
+                if let Some(t) = self.terminals.get_mut(&surface) {
+                    let _ = t.resize(rows, cols);
+                }
             }
             Event::PromptDeleteWorktree(path, name) => {
                 if path == self.last_workspace_path {

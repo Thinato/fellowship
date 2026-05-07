@@ -1,18 +1,16 @@
 use std::path::PathBuf;
 
-// Phase 2 ships the type definitions; Phase 3+ wires them into actual member
-// surfaces. Allow dead_code on the role/member-id items until that wiring lands.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
     Pm,
     Orchestrator,
     Architect,
     Recon,
+    /// Used dynamically once the engineer pool spawns in Phase 9.
+    #[allow(dead_code)]
     Engineer,
 }
 
-#[allow(dead_code)]
 impl Role {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -25,19 +23,19 @@ impl Role {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MemberId {
     pub role: Role,
     pub instance: u32,
 }
 
-#[allow(dead_code)]
 impl MemberId {
     pub fn singleton(role: Role) -> Self {
         Self { role, instance: 0 }
     }
 
+    /// Used by the dynamic engineer pool in Phase 9.
+    #[allow(dead_code)]
     pub fn engineer(instance: u32) -> Self {
         Self {
             role: Role::Engineer,

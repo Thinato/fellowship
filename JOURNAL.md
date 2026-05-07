@@ -67,4 +67,26 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 3 — Singleton agent PTYs
+
+- **Started:** 2026-05-06
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - At startup, fellowship spawns 4 always-on PTYs — one per singleton role (PM, Orchestrator, Architect, Recon) — keyed by `Surface::Member(MemberId::singleton(role))` in the existing `terminals` HashMap. Each PTY runs `echo '[<role>] placeholder — real prompt lands in Phase 10'; exec bash` so the role is visible on first focus and a real shell is available afterward.
+  - `App::new` signature changed to `Result<Self>` so PTY spawn errors propagate cleanly through `main`. `main.rs` updated to `App::new(...)?`.
+  - New event variant `Event::SwitchSurface(Surface)` (`src/event.rs:14`). Members-pane `Enter` now emits `Event::SwitchSurface(Surface::Member(id))`; the App handler swaps `active_surface`, sets `members.active`, focuses Terminal, and resizes the PTY. The `SwitchSurface(Workspace(_))` arm delegates to the existing `SwitchWorkspace` flow so its workspace-only side effects (git_status root, GitRefresh, list select) still fire.
+  - `MembersPane` rewrite: `Vec<String>` → `Vec<MemberId>`, `active: usize` → `active: Option<MemberId>`. Added `set_active_member`, `selected_member`. Engineers dropped from the placeholder list — the dynamic engineer pool arrives in Phase 9. 5 unit tests cover construction, j/k clamping, Enter-event emission, and active-marker driving.
+  - `Event::SwitchWorkspace` now also calls `members.set_active_member(None)` so the active marker clears when the user switches back to a workspace.
+  - Status bar shows a green `[member: <label>]` badge whenever `active_surface` is a Member, regardless of which pane is focused — makes the surface unambiguous when typing in the Terminal.
+  - `#[allow(dead_code)]` narrowed to `Role::Engineer`, `MemberId::engineer`, and `Surface::workspace_path` (Phase 9 / future use).
+  - Cargo gate green: 82 tests pass (was 81; +1 net = 5 new members tests minus 4 phase-1 tests rewritten).
+- **Notes:**
+  - Banner command intentionally lightweight. Phase 10 swaps it for the real `claude --dangerously-skip-permissions [--system-prompt …] [--model …]` invocation per the resolved Q3 (claude for all five, per-role model with Recon=haiku).
+  - `Event::SwitchSurface(Workspace(_))` delegating to `SwitchWorkspace` is intentional: it gives the Members pane a single emit shape (`SwitchSurface`) while keeping the workspace flow's extra side effects in one place.
+  - Spawning 4 PTYs at startup costs 4 background processes. On exit, the existing `for t in app.terminals.values_mut() { t.shutdown(); }` loop in `main.rs` already iterates by Surface key and reaps every PTY uniformly — no shutdown changes needed.
+  - Manual smoke not run (this agent has no interactive terminal). Verified by unit tests + cargo gate; the user is expected to run a quick visual check after pulling: `cargo run`, then `Ctrl+a m`, `j j`, `Enter` should land on Architect's PTY with the `[architect] placeholder` banner. If the banner does not appear or no prompt is interactive, the spawn config in `src/app.rs` `App::new` is the place to look.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

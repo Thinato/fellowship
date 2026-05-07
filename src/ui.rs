@@ -119,19 +119,28 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         PaneId::GitStatus => "GIT STATUS",
     };
 
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", focus_label),
+    let mut spans = vec![Span::styled(
+        format!(" {} ", focus_label),
+        Style::default()
+            .fg(theme::STATUS_FG)
+            .bg(theme::STATUS_BG)
+            .add_modifier(Modifier::BOLD),
+    )];
+
+    if let crate::surface::Surface::Member(id) = &app.active_surface {
+        spans.push(Span::styled(
+            format!(" [member: {}] ", id.label()),
             Style::default()
-                .fg(theme::STATUS_FG)
+                .fg(ratatui::style::Color::Green)
                 .bg(theme::STATUS_BG)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "  Ctrl+a: prefix  ?:help  :quit",
-            Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
-        ),
-    ];
+        ));
+    }
+
+    spans.push(Span::styled(
+        "  Ctrl+a: prefix  ?:help  :quit",
+        Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
+    ));
 
     if prefix_indicator {
         spans.push(Span::styled(

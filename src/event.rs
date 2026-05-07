@@ -1,5 +1,6 @@
 use crate::gh::PrInfo;
 use crate::git::{Diff, Worktree};
+use crate::surface::Surface;
 use crossterm::event::KeyEvent;
 use std::path::PathBuf;
 
@@ -11,6 +12,10 @@ pub enum Event {
     GitRefresh,
     PtyOutput,
     SwitchWorkspace(PathBuf),
+    /// Generic surface switch. Used by the Members pane to focus a specific
+    /// agent. Workspace switching keeps using `SwitchWorkspace` because it
+    /// carries extra side effects (git_status root, GitRefresh, list select).
+    SwitchSurface(Surface),
     CreateWorktree(String),
     PromptDeleteWorktree(PathBuf, String),
     DeleteWorktree(PathBuf),

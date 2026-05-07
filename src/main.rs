@@ -75,7 +75,7 @@ async fn run(
         event_tx.clone(),
         startup_cmd.as_deref(),
     )?;
-    let mut app = App::new(root_path.clone(), pty_pane, event_tx.clone(), startup_cmd);
+    let mut app = App::new(root_path.clone(), pty_pane, event_tx.clone(), startup_cmd)?;
 
     // Initial data load
     let _ = event_tx.send(Event::GitRefresh);
