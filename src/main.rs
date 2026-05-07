@@ -6,6 +6,7 @@ mod git;
 mod keymap;
 mod layout;
 mod panes;
+mod surface;
 mod ui;
 
 use std::path::PathBuf;

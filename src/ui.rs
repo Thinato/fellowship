@@ -88,8 +88,8 @@ fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_terminal_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Terminal;
-    let path = app.active_path.clone();
-    if let Some(t) = app.terminals.get_mut(&path) {
+    let key = app.active_surface.clone();
+    if let Some(t) = app.terminals.get_mut(&key) {
         t.render(frame, area, focused);
     }
 }

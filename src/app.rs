@@ -14,6 +14,7 @@ use crate::panes::gitstatus::GitStatusPane;
 use crate::panes::members::MembersPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
+use crate::surface::Surface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneId {
@@ -28,12 +29,18 @@ pub struct App {
     pub input_mode: InputMode,
     pub members: MembersPane,
     pub workspaces: WorkspacesPane,
-    pub terminals: HashMap<PathBuf, TerminalPane>,
+    pub terminals: HashMap<Surface, TerminalPane>,
     pub git_status: GitStatusPane,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
-    pub active_path: PathBuf,
+    /// Surface currently bound to the Terminal pane. In Phase 2 this is always
+    /// `Surface::Workspace(...)`; Phase 3 introduces `Surface::Member(...)`.
+    pub active_surface: Surface,
+    /// Path of the most recently active workspace. Workspace-bound operations
+    /// (git diff, worktree create/delete) always operate against this path,
+    /// even when the active surface is a Member.
+    pub last_workspace_path: PathBuf,
     pub last_term_size: (u16, u16),
     pub event_tx: mpsc::UnboundedSender<Event>,
     pub layout: PaneLayout,
@@ -50,7 +57,8 @@ impl App {
     ) -> Self {
         let last_term_size = terminal.size();
         let mut terminals = HashMap::new();
-        terminals.insert(root_path.clone(), terminal);
+        let initial_surface = Surface::Workspace(root_path.clone());
+        terminals.insert(initial_surface.clone(), terminal);
         Self {
             focus: PaneId::Terminal,
             input_mode: InputMode::Normal,
@@ -61,7 +69,8 @@ impl App {
             show_help: false,
             should_quit: false,
             pending_delete: None,
-            active_path: root_path,
+            active_surface: initial_surface,
+            last_workspace_path: root_path,
             last_term_size,
             event_tx,
             layout: PaneLayout::default_horizontal(),
@@ -81,8 +90,8 @@ impl App {
     }
 
     pub fn active_terminal_mut(&mut self) -> Option<&mut TerminalPane> {
-        let path = self.active_path.clone();
-        self.terminals.get_mut(&path)
+        let key = self.active_surface.clone();
+        self.terminals.get_mut(&key)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -187,12 +196,14 @@ impl App {
                 self.handle_key(key)?;
             }
             Event::SwitchWorkspace(path) => {
-                self.active_path = path.clone();
+                let surface = Surface::Workspace(path.clone());
+                self.active_surface = surface.clone();
+                self.last_workspace_path = path.clone();
                 self.git_status.root_path = path.clone();
                 self.workspaces.select_path(&path);
                 self.focus = PaneId::Terminal;
                 let (rows, cols) = self.last_term_size;
-                if !self.terminals.contains_key(&path) {
+                if !self.terminals.contains_key(&surface) {
                     let pane = TerminalPane::spawn(
                         rows,
                         cols,
@@ -200,24 +211,24 @@ impl App {
                         self.event_tx.clone(),
                         self.startup_cmd.as_deref(),
                     )?;
-                    self.terminals.insert(path.clone(), pane);
-                } else if let Some(t) = self.terminals.get_mut(&path) {
+                    self.terminals.insert(surface, pane);
+                } else if let Some(t) = self.terminals.get_mut(&surface) {
                     let _ = t.resize(rows, cols);
                 }
                 let _ = self.event_tx.send(Event::GitRefresh);
             }
             Event::PromptDeleteWorktree(path, name) => {
-                if path == self.active_path {
+                if path == self.last_workspace_path {
                     // Refuse: cannot remove current worktree from inside it.
                 } else {
                     self.pending_delete = Some((path, name));
                 }
             }
             Event::DeleteWorktree(path) => {
-                let root = self.active_path.clone();
+                let root = self.last_workspace_path.clone();
                 let tx = self.event_tx.clone();
                 let target = path.clone();
-                self.terminals.remove(&path);
+                self.terminals.remove(&Surface::Workspace(path));
                 tokio::spawn(async move {
                     match git::remove_worktree(&root, &target).await {
                         Ok(_) => {
@@ -232,7 +243,7 @@ impl App {
                 });
             }
             Event::CreateWorktree(branch) => {
-                let root = self.active_path.clone();
+                let root = self.last_workspace_path.clone();
                 let tx = self.event_tx.clone();
                 tokio::spawn(async move {
                     match git::add_worktree(&root, &branch).await {
@@ -252,7 +263,7 @@ impl App {
                 self.workspaces.set_worktrees(worktrees);
             }
             Event::GitRefresh => {
-                let path = self.active_path.clone();
+                let path = self.last_workspace_path.clone();
                 let tx = self.event_tx.clone();
                 tokio::spawn(async move {
                     let diff = git::diff_summary(&path).await.unwrap_or_default();
