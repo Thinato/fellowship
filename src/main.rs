@@ -19,6 +19,7 @@ use fellowship::beads;
 use fellowship::config;
 use fellowship::debug_log;
 use fellowship::event::Event;
+use fellowship::guard;
 use fellowship::panes::terminal::TerminalPane;
 use fellowship::runtime;
 use fellowship::ui;
@@ -58,13 +59,38 @@ async fn main() -> Result<()> {
         error!("failed to write CURRENT_SESSION marker: {e}");
     }
 
+    // Install the safe-git shim and compute the PATH override for member
+    // surfaces. Boot fails loudly if the shim cannot be installed — agents
+    // running with --dangerously-skip-permissions and an unrestricted PATH
+    // could push directly to main, which is the exact failure mode we are
+    // guarding against.
+    let shim_dir = guard::shim_dir()?;
+    let safe_git = guard::locate_safe_git()?;
+    guard::install_shims(&shim_dir, &safe_git)?;
+    let agent_path_os = guard::path_with_shim_prepended(&shim_dir)?;
+    let agent_path = agent_path_os
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("PATH contained non-UTF8 bytes; refuse to spawn agents"))?;
+    info!(
+        shim_dir = %shim_dir.display(),
+        safe_git = %safe_git.display(),
+        "safe-git shims installed for agent surfaces"
+    );
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run(&mut terminal, root_path, runtime_root, session_id.clone()).await;
+    let result = run(
+        &mut terminal,
+        root_path,
+        runtime_root,
+        session_id.clone(),
+        agent_path,
+    )
+    .await;
 
     disable_raw_mode()?;
     execute!(
@@ -87,6 +113,7 @@ async fn run(
     root_path: PathBuf,
     runtime_root: PathBuf,
     session_id: String,
+    agent_path: String,
 ) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
@@ -109,6 +136,7 @@ async fn run(
         root_path.clone(),
         &runtime_root,
         session_id,
+        &agent_path,
         pty_pane,
         event_tx.clone(),
         startup_cmd,

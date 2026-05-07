@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "fellowship-ctl"
 path = "src/bin/fellowship-ctl.rs"
 
+[[bin]]
+name = "safe-git"
+path = "src/bin/safe-git.rs"
+
 [dependencies]
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }

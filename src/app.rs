@@ -74,6 +74,7 @@ impl App {
         root_path: PathBuf,
         runtime_root: &std::path::Path,
         session_id: String,
+        agent_path: &str,
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
         startup_cmd: Option<String>,
@@ -94,8 +95,17 @@ impl App {
                 "echo '[{}] placeholder — real prompt lands in Phase 10'; exec bash",
                 role.as_str()
             );
-            let pane =
-                TerminalPane::spawn(rows, cols, &root_path, event_tx.clone(), Some(&banner))?;
+            // Member surfaces inherit the safe-git shim via PATH so any
+            // forbidden git/gh invocation (Phase 10's real claude agents)
+            // is rejected before reaching the real binaries.
+            let pane = TerminalPane::spawn_with_env(
+                rows,
+                cols,
+                &root_path,
+                event_tx.clone(),
+                Some(&banner),
+                &[("PATH", agent_path)],
+            )?;
             terminals.insert(Surface::Member(id), pane);
         }
 

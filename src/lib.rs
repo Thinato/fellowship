@@ -13,6 +13,7 @@ pub mod debug_log;
 pub mod event;
 pub mod gh;
 pub mod git;
+pub mod guard;
 pub mod keymap;
 pub mod layout;
 pub mod panes;

@@ -216,4 +216,36 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 8 — `safe-git` shim + PATH injection
+
+- **Started:** 2026-05-07
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - **Policy module (`src/guard.rs`)** — pure data-in / decision-out logic implementing layer 2 of the no-merge guardrail (plan §3.7). `Tool` enum (Git / Gh / Other), `Decision` enum (Allow / Block(reason)). `decide(tool, args)` walks past leading global options and dispatches to `decide_git` / `decide_gh`. Blocked patterns:
+    - `git merge ...`
+    - `git push --force` / `-f` / `--force-with-lease`
+    - `git push origin main|master` (also `refs/heads/main`, `HEAD:main`, etc.)
+    - `gh pr merge ...`
+  - **Shim binary (`src/bin/safe-git.rs`, new `[[bin]]`)** — argv[0]-driven dispatcher. Detects whether it was invoked as `git` or `gh` via the symlink name, calls `guard::decide`, and either:
+    - exits non-zero with a stderr message naming the violation, or
+    - strips the shim's directory from PATH and `exec`s the real binary.
+  - **Install helpers (`guard::install_shims`, `guard::shim_dir`, `guard::locate_safe_git`, `guard::path_with_shim_prepended`)** — fellowship boot:
+    1. Locates `safe-git` next to its own binary (same cargo build → same dir).
+    2. Creates symlinks `~/.fellowship/bin/{git,gh}` → that path. Idempotent (existing symlink with the right target is left alone; stale target is replaced; non-symlink at the path is refused with a clear error).
+    3. Computes a PATH override `${HOME}/.fellowship/bin:${original-PATH}` and threads it into `App::new`.
+  - **Per-surface PATH injection.** `TerminalPane::spawn_with_env(rows, cols, cwd, tx, startup_cmd, extra_env)` is the new full-form constructor; the existing `spawn` delegates with empty env. Member surfaces (PM / Orchestrator / Architect / Recon PTYs in `App::new`) are spawned via `spawn_with_env` with `[("PATH", agent_path)]`. Workspace surfaces continue calling `spawn` and inherit fellowship's unmodified PATH — the user's own terminal is not affected.
+  - **Boot fails loudly** if the shim cannot be installed. `App::new` does not silently degrade because the failure mode (agents pushing to master with `--dangerously-skip-permissions`) is exactly what this phase guards against.
+  - **`tracing::info!` on shim install** records the resolved shim_dir and safe-git path in `<runtime>/fellowship.log` for visibility.
+  - **Tests:** 16 unit tests in `guard.rs` cover every blocked / allowed pattern (`git merge`, force-push variants, push to main/master via plain ref / `refs/heads/` / `HEAD:` refspec / variations on prefix-only flags, feature-branch happy path, unrelated subcommands pass through, `gh pr merge` blocked, `gh pr {create,view,list,checkout,diff,comment}` allowed, `gh repo view` allowed, empty argv allowed, install-shims happy path / idempotency / stale-symlink replacement / refusal to clobber non-symlinks, PATH prepend ordering).
+  - Cargo gate green: 128 tests total — 121 lib (was 105; +16 guard) + 7 fellowship-ctl bin + 0 safe-git bin (binary entry only; logic is in `guard`).
+- **Notes:**
+  - Plan §3.7 specifies three guardrail layers; Phase 8 ships layer 2 (PATH shim). Layer 1 (system-prompt prohibitions) lands with the role markdown in Phase 10. Layer 3 (GitHub branch protection) is documented in Phase 9 / 12 and not enforced by fellowship.
+  - The shim is bypassable by an agent that calls `/usr/bin/git` directly. This is acknowledged in plan §9 as a known limitation; layer 3 (branch protection) is the load-bearing defense against that. Not a fix-for-this-phase concern.
+  - `Tool::Other` short-circuits to `Decision::Allow` so the binary is safe to invoke under unexpected names without breaking the host. The binary entry refuses to exec in that case (it does not know which real tool to forward to) and exits with code 2.
+  - `--force-with-lease` is treated identically to `--force` in this phase. Even though `--force-with-lease` is safer than `--force`, agents pushing without human review can still rewrite history visible to humans; only humans run force-pushes in this design.
+  - `git rebase` is **not** blocked. Agents need rebase to integrate upstream changes onto feature branches before pushing. Rebasing onto a protected branch is implicitly blocked at push time (agents can't push the rewritten branch back to main/master). Plan §9 risk row "shim bypass via direct binary path" stays the relevant limitation.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

@@ -193,6 +193,20 @@ impl TerminalPane {
         tx: UnboundedSender<Event>,
         startup_cmd: Option<&str>,
     ) -> Result<Self> {
+        Self::spawn_with_env(rows, cols, cwd, tx, startup_cmd, &[])
+    }
+
+    /// Like [`Self::spawn`] but with extra environment variables added to
+    /// the spawned shell. Member surfaces use this to inject a `PATH`
+    /// override that points at the `safe-git` shim before the real `git`.
+    pub fn spawn_with_env(
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        tx: UnboundedSender<Event>,
+        startup_cmd: Option<&str>,
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -205,6 +219,9 @@ impl TerminalPane {
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
+        for (k, v) in extra_env {
+            cmd.env(*k, *v);
+        }
 
         let child = pair.slave.spawn_command(cmd)?;
         // Must drop slave so EOF propagates when child exits
