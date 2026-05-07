@@ -139,7 +139,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_width = 52u16;
-    let help_height = 17u16;
+    let help_height = 18u16;
     let x = area.x + area.width.saturating_sub(help_width) / 2;
     let y = area.y + area.height.saturating_sub(help_height) / 2;
     let popup_area = Rect::new(
@@ -154,6 +154,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  Ctrl+a e         Focus Workspaces"),
         Line::from("  Ctrl+a t         Focus Terminal"),
         Line::from("  Ctrl+a g         Focus Git Status"),
+        Line::from("  Ctrl+a o         Cycle through panes"),
         Line::from("  Ctrl+a q         Quit"),
         Line::from("  Ctrl+a ?         Toggle help"),
         Line::from("  Ctrl+a Ctrl+a    Send literal ^A to PTY"),

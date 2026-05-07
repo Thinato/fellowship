@@ -18,6 +18,7 @@ pub enum Action {
     FocusDir(Dir),
     SwitchWorktree(usize),
     Quit,
+    CyclePane,
     ToggleHelp,
     SendLiteralPrefix,
     EnterCommandMode,
@@ -116,6 +117,10 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
     map.insert(
         KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
         Action::ToggleHelp,
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+        Action::CyclePane,
     );
     map.insert(
         KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
@@ -309,6 +314,15 @@ mod tests {
         km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         let a = km.handle(&mut mode, char_key('l'), PaneId::Terminal);
         assert_eq!(a, Action::FocusDir(Dir::Right));
+    }
+
+    #[test]
+    fn prefix_then_o_cycles_pane() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('o'), PaneId::Terminal);
+        assert_eq!(a, Action::CyclePane);
     }
 
     #[test]

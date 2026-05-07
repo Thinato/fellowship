@@ -118,6 +118,13 @@ impl App {
             Action::Quit => {
                 self.should_quit = true;
             }
+            Action::CyclePane => {
+                self.focus = match self.focus {
+                    PaneId::Workspaces => PaneId::Terminal,
+                    PaneId::Terminal => PaneId::GitStatus,
+                    PaneId::GitStatus => PaneId::Workspaces,
+                };
+            }
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
             }
