@@ -88,6 +88,25 @@ pub fn ensure_subdir(root: &Path, name: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
+pub fn journal_path(root: &Path) -> PathBuf {
+    root.join(JOURNAL_FILE)
+}
+
+/// Read the journal file and parse every NDJSON line. Best-effort: malformed
+/// lines are skipped silently. Returns an empty vec if the file is absent.
+pub fn read_journal(root: &Path) -> Result<Vec<JournalEntry>> {
+    let path = journal_path(root);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes);
+    Ok(text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<JournalEntry>(line).ok())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

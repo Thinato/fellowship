@@ -92,7 +92,7 @@ async fn run(
     )?;
 
     // Watcher must outlive the run loop or notify drops the underlying watch.
-    let _watcher = watcher::spawn_state_watcher(&runtime_root, event_tx.clone())?;
+    let _watcher = watcher::spawn_runtime_watcher(&runtime_root, event_tx.clone())?;
 
     // Initial data load
     let _ = event_tx.send(Event::GitRefresh);

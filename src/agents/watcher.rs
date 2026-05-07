@@ -11,33 +11,54 @@ use notify::{Event as NotifyEvent, EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::Event;
-use crate::runtime::{HeartbeatRecord, STATE_DIR};
+use crate::runtime::{HeartbeatRecord, JOURNAL_FILE, STATE_DIR, journal_path, read_journal};
 
-/// Spawn a notify watcher on `<runtime_root>/state/`. Each heartbeat write or
-/// rewrite emits exactly one `Event::AgentHeartbeat` on `tx`.
+/// Spawn a notify watcher rooted at `runtime_root`. Watches:
+/// - `<runtime_root>/state/` — every heartbeat JSON write fires
+///   `Event::AgentHeartbeat`.
+/// - `<runtime_root>/journal.ndjson` — every append fires
+///   `Event::JournalSnapshot` with the full re-parsed contents.
 ///
 /// Returns the watcher; drop it to stop watching. Callers should keep it
-/// alive in `App` so it lives as long as the TUI session.
-pub fn spawn_state_watcher(
+/// alive in `App` (or `main::run`) so it lives as long as the TUI session.
+pub fn spawn_runtime_watcher(
     runtime_root: &Path,
     tx: UnboundedSender<Event>,
 ) -> Result<notify::RecommendedWatcher> {
     let state_dir = runtime_root.join(STATE_DIR);
     std::fs::create_dir_all(&state_dir)
         .with_context(|| format!("mkdir -p {}", state_dir.display()))?;
+    // Touch the journal file so notify has something to watch from t=0.
+    let journal = journal_path(runtime_root);
+    if !journal.exists() {
+        std::fs::write(&journal, b"").with_context(|| format!("touch {}", journal.display()))?;
+    }
 
+    let runtime_root_owned = runtime_root.to_path_buf();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<NotifyEvent>| {
         let Ok(event) = res else { return };
-        if !is_heartbeat_event(&event) {
+        if !matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any
+        ) {
             return;
         }
+        let mut journal_dirty = false;
         for path in &event.paths {
-            if let Some(record) = read_heartbeat(path)
+            if path.ends_with(JOURNAL_FILE) {
+                journal_dirty = true;
+            } else if is_json_file(path)
+                && let Some(record) = read_heartbeat(path)
                 && tx.send(Event::AgentHeartbeat(record)).is_err()
             {
-                // Receiver dropped; nothing to do.
                 return;
             }
+        }
+        if journal_dirty
+            && let Ok(entries) = read_journal(&runtime_root_owned)
+            && tx.send(Event::JournalSnapshot(entries)).is_err()
+        {
+            // Receiver dropped; nothing to do.
         }
     })
     .context("creating notify watcher")?;
@@ -45,15 +66,11 @@ pub fn spawn_state_watcher(
     watcher
         .watch(&state_dir, RecursiveMode::NonRecursive)
         .with_context(|| format!("watching {}", state_dir.display()))?;
+    watcher
+        .watch(&journal, RecursiveMode::NonRecursive)
+        .with_context(|| format!("watching {}", journal.display()))?;
 
     Ok(watcher)
-}
-
-fn is_heartbeat_event(event: &NotifyEvent) -> bool {
-    matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Any
-    ) && event.paths.iter().any(|p| is_json_file(p))
 }
 
 fn is_json_file(path: &Path) -> bool {

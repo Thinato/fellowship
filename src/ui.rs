@@ -1,4 +1,4 @@
-use crate::app::{App, PaneId};
+use crate::app::{App, PaneId, RightView};
 use crate::keymap::InputMode;
 use ratatui::{
     Frame,
@@ -37,7 +37,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_members_pane(frame, app, members_area);
     render_workspaces_pane(frame, app, workspaces_area);
     render_terminal_pane(frame, app, mid_area);
-    render_gitstatus_pane(frame, app, right_area);
+    render_right_column(frame, app, right_area);
     render_status_bar(frame, app, status_area);
 
     if app.show_help {
@@ -95,9 +95,12 @@ fn render_terminal_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn render_gitstatus_pane(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_right_column(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::GitStatus;
-    app.git_status.render(frame, area, focused);
+    match app.right_view {
+        RightView::Git => app.git_status.render(frame, area, focused),
+        RightView::Status => app.status.render(frame, area, focused, &app.beads),
+    }
 }
 
 fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -117,7 +120,10 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         PaneId::Members => "MEMBERS",
         PaneId::Workspaces => "WORKSPACES",
         PaneId::Terminal => "TERMINAL",
-        PaneId::GitStatus => "GIT STATUS",
+        PaneId::GitStatus => match app.right_view {
+            RightView::Git => "GIT STATUS",
+            RightView::Status => "STATUS",
+        },
     };
 
     let mut spans = vec![Span::styled(
@@ -159,7 +165,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_width = 52u16;
-    let help_height = 19u16;
+    let help_height = 21u16;
     let x = area.x + area.width.saturating_sub(help_width) / 2;
     let y = area.y + area.height.saturating_sub(help_height) / 2;
     let popup_area = Rect::new(
@@ -174,7 +180,8 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  Ctrl+a m         Focus Members"),
         Line::from("  Ctrl+a e         Focus Workspaces"),
         Line::from("  Ctrl+a t         Focus Terminal"),
-        Line::from("  Ctrl+a g         Focus Git Status"),
+        Line::from("  Ctrl+a g         Focus Git view (right column)"),
+        Line::from("  Ctrl+a s         Focus Status view (right column)"),
         Line::from("  Ctrl+a o         Cycle through panes"),
         Line::from("  Ctrl+a q         Quit"),
         Line::from("  Ctrl+a ?         Toggle help"),
@@ -188,6 +195,8 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  n     New worktree (Workspaces)"),
         Line::from("  d     Delete selected worktree"),
         Line::from("  Enter Switch to worktree"),
+        Line::from("  J     Toggle Beads/Journal (Status view)"),
+        Line::from("  f     Toggle journal filter to recent agent"),
         Line::from(""),
     ];
 

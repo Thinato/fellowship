@@ -14,6 +14,7 @@ use crate::keymap::{Action, InputMode, Keymap, default_bindings};
 use crate::layout::PaneLayout;
 use crate::panes::gitstatus::GitStatusPane;
 use crate::panes::members::MembersPane;
+use crate::panes::status::StatusPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
 use crate::runtime::STATE_DIR;
@@ -27,6 +28,13 @@ pub enum PaneId {
     GitStatus,
 }
 
+/// Which sub-view the right column currently shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RightView {
+    Git,
+    Status,
+}
+
 pub struct App {
     pub focus: PaneId,
     pub input_mode: InputMode,
@@ -34,6 +42,8 @@ pub struct App {
     pub workspaces: WorkspacesPane,
     pub terminals: HashMap<Surface, TerminalPane>,
     pub git_status: GitStatusPane,
+    pub status: StatusPane,
+    pub right_view: RightView,
     pub agent_registry: AgentRegistry,
     pub beads: Vec<Bead>,
     pub show_help: bool,
@@ -95,6 +105,8 @@ impl App {
             workspaces: WorkspacesPane::new(root_path.clone()),
             terminals,
             git_status: GitStatusPane::new(root_path.clone()),
+            status: StatusPane::new(),
+            right_view: RightView::Git,
             agent_registry,
             beads: Vec::new(),
             show_help: false,
@@ -170,6 +182,14 @@ impl App {
                     PaneId::GitStatus => PaneId::Members,
                 };
             }
+            Action::FocusGitView => {
+                self.right_view = RightView::Git;
+                self.focus = PaneId::GitStatus;
+            }
+            Action::FocusStatusView => {
+                self.right_view = RightView::Status;
+                self.focus = PaneId::GitStatus;
+            }
             Action::ToggleHelp => {
                 self.show_help = !self.show_help;
             }
@@ -211,9 +231,14 @@ impl App {
                     let _ = self.event_tx.send(event);
                 }
             }
-            PaneId::GitStatus => {
-                // git status pane has no key handling currently
-            }
+            PaneId::GitStatus => match self.right_view {
+                RightView::Git => {
+                    // git view has no key handling currently
+                }
+                RightView::Status => {
+                    self.status.handle_key(key);
+                }
+            },
             PaneId::Members => {
                 if let Some(event) = self.members.handle_key(key) {
                     let _ = self.event_tx.send(event);
@@ -333,6 +358,9 @@ impl App {
             }
             Event::BeadsRefreshed(beads) => {
                 self.beads = beads;
+            }
+            Event::JournalSnapshot(entries) => {
+                self.status.replace_journal(entries);
             }
             Event::DiffUpdated(diff) => {
                 self.git_status.update_diff(diff);

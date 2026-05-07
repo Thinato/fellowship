@@ -21,6 +21,9 @@ pub enum Event {
     /// Emitted by the runtime watcher whenever a heartbeat JSON file under
     /// `<runtime>/state/` is written. Carries the parsed record.
     AgentHeartbeat(HeartbeatRecord),
+    /// Emitted by the runtime watcher whenever `<runtime>/journal.ndjson`
+    /// changes. Carries the full re-parsed list (cheaper than tracking deltas).
+    JournalSnapshot(Vec<crate::runtime::JournalEntry>),
     /// Emitted by the beads poller every ~3s with the latest snapshot.
     BeadsRefreshed(Vec<Bead>),
     CreateWorktree(String),

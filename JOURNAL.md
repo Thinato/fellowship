@@ -160,4 +160,27 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 7 — Status / Journal pane
+
+- **Started:** 2026-05-06
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - **Container shape (Q1 from Phase 7 prompt = option B).** New `RightView` enum (`Git` | `Status`) on `App`. `ui::render_right_column` dispatches: `RightView::Git` → existing `GitStatusPane`; `RightView::Status` → new `StatusPane`. Same screen real estate; toggle via `Ctrl+a g` / `Ctrl+a s`. PaneId remains `GitStatus` (the right column is a single focusable pane regardless of sub-view).
+  - **New keymap actions** `Action::FocusGitView` / `Action::FocusStatusView`. The old `Ctrl+a g → FocusPane(GitStatus)` mapping was replaced by `FocusGitView` (sets `right_view = Git` + focuses the right column). `Ctrl+a s → FocusStatusView` mirrors that for the Status view. `prefix_then_g_focuses_gitstatus` test renamed to `prefix_then_g_focuses_git_view`; new `prefix_then_s_focuses_status_view`.
+  - **`StatusPane` (`src/panes/status.rs`)** — two sub-views: `Beads` (default) and `Journal`, toggled with `J`. Beads view = 4-column kanban (OPEN / IN-PROG / REVIEW / DONE) with up to 8 beads per column, titles truncated to 20 chars. Journal view = tail of last 200 entries colored per-agent (stable hash → 8-color palette). `f` toggles a single-agent filter (latches onto the most-recent entry's agent; press again to clear). 5 unit tests cover toggle, filter gating, ringbuf cap, truncate, color stability.
+  - **Journal watch.** `spawn_state_watcher` renamed to `spawn_runtime_watcher`. Watches `<runtime>/state/` (heartbeats) AND `<runtime>/journal.ndjson` (journal). Journal modifications re-parse the whole file and emit `Event::JournalSnapshot(Vec<JournalEntry>)`. The watcher touches `journal.ndjson` if absent so notify has something to register from t=0.
+  - **Runtime helpers.** `runtime::journal_path()` and `runtime::read_journal()` added — best-effort NDJSON parse; malformed lines skipped silently; missing file → empty vec.
+  - **App wiring.** New fields: `App.status: StatusPane`, `App.right_view: RightView`. New event variant `Event::JournalSnapshot(Vec<JournalEntry>)` handled by `App::handle_event` → `self.status.replace_journal(entries)`. `dispatch_key_to_focused_pane` for `PaneId::GitStatus` now branches on `right_view` and forwards keys to `StatusPane::handle_key` when applicable (so `J`/`f` work without a separate keybind plumbing path).
+  - **Status bar focus label** now shows "STATUS" or "GIT STATUS" depending on `right_view` when the right column is focused.
+  - **Help overlay.** Added `Ctrl+a g  Focus Git view (right column)`, `Ctrl+a s  Focus Status view (right column)`, `J  Toggle Beads/Journal (Status view)`, `f  Toggle journal filter to recent agent`. Height bumped 19 → 21.
+  - Cargo gate green: 112 tests total — 105 lib (was 99; +5 status + 1 keymap) + 7 fellowship-ctl bin + 0 integration.
+- **Notes:**
+  - Re-parsing the entire journal on every modification is intentional: bounded by `JOURNAL_TAIL_MAX = 200` entries displayed, the parse is cheap and avoids tracking file offsets across truncation/rotation. If the journal grows past ~10k lines and parse cost shows up in profiling, switch to incremental tail reads.
+  - The journal-filter UX (`f`) is intentionally minimal for v1 — a real "filter by id" UI lands when there are >5 active agents and the simple latch becomes painful. Plan §4.2 calls for `f filters to a specific agent` so this matches scope.
+  - The keymap ↔ ui contract: `RightView` lives in `app.rs` (it's app state); `keymap.rs` stays decoupled by exposing two distinct Actions instead of carrying a `RightView` value through the action enum. Trade-off: a new sub-view costs one new Action variant, but the alternative leaks app state into keymap's API.
+  - `Ctrl+a Esc` cancels prefix mode but doesn't reset `right_view`; that's by design — last-set view persists across focus changes.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->
