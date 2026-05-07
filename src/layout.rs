@@ -13,14 +13,31 @@ pub struct PaneLayout {
 }
 
 impl PaneLayout {
-    /// Default three-column horizontal layout: Workspaces | Terminal | GitStatus
+    /// Default layout (post-Phase 1): left column is split into Members(top)/Workspaces(bottom);
+    /// middle is Terminal; right is GitStatus.
+    ///
+    /// ```text
+    /// col=0 col=1     col=2
+    /// +-------+--------+-------+
+    /// |Members|        |       |
+    /// |  row=0|Terminal|GitStat|
+    /// +-------+ row=0  | row=0 |
+    /// |Workspc|        |       |
+    /// |  row=1|        |       |
+    /// +-------+--------+-------+
+    /// ```
     pub fn default_horizontal() -> Self {
         Self {
             slots: vec![
                 Slot {
-                    pane: PaneId::Workspaces,
+                    pane: PaneId::Members,
                     col: 0,
                     row: 0,
+                },
+                Slot {
+                    pane: PaneId::Workspaces,
+                    col: 0,
+                    row: 1,
                 },
                 Slot {
                     pane: PaneId::Terminal,
@@ -91,13 +108,44 @@ mod tests {
         PaneLayout::default_horizontal()
     }
 
-    // --- Default layout: Workspaces(0,0) | Terminal(1,0) | GitStatus(2,0) ---
+    // --- Default layout (post-Phase 1):
+    //     Members(0,0)    Terminal(1,0)  GitStatus(2,0)
+    //     Workspaces(0,1)
+    // ---
 
     #[test]
-    fn default_terminal_left_is_workspaces() {
+    fn default_members_left_is_none() {
+        assert_eq!(default().neighbor(PaneId::Members, Dir::Left), None);
+    }
+
+    #[test]
+    fn default_members_right_is_terminal() {
+        assert_eq!(
+            default().neighbor(PaneId::Members, Dir::Right),
+            Some(PaneId::Terminal)
+        );
+    }
+
+    #[test]
+    fn default_members_up_is_none() {
+        assert_eq!(default().neighbor(PaneId::Members, Dir::Up), None);
+    }
+
+    #[test]
+    fn default_members_down_is_workspaces() {
+        assert_eq!(
+            default().neighbor(PaneId::Members, Dir::Down),
+            Some(PaneId::Workspaces)
+        );
+    }
+
+    #[test]
+    fn default_terminal_left_is_members() {
+        // Members shares row=0 with Terminal, Workspaces is on row=1.
+        // Same-row preference picks Members.
         assert_eq!(
             default().neighbor(PaneId::Terminal, Dir::Left),
-            Some(PaneId::Workspaces)
+            Some(PaneId::Members)
         );
     }
 
@@ -116,7 +164,12 @@ mod tests {
 
     #[test]
     fn default_terminal_down_is_none() {
-        assert_eq!(default().neighbor(PaneId::Terminal, Dir::Down), None);
+        // Workspaces is at row=1 but col=0 (Terminal is col=1).
+        // Algorithm: any candidate below counts; Workspaces is the only one.
+        assert_eq!(
+            default().neighbor(PaneId::Terminal, Dir::Down),
+            Some(PaneId::Workspaces)
+        );
     }
 
     #[test]
@@ -126,6 +179,8 @@ mod tests {
 
     #[test]
     fn default_workspaces_right_is_terminal() {
+        // Same-row preference: Terminal(1,0) does not share row=1 with Workspaces;
+        // GitStatus(2,0) doesn't either. Distance: Terminal col_dist=1, GitStatus=2. Terminal wins.
         assert_eq!(
             default().neighbor(PaneId::Workspaces, Dir::Right),
             Some(PaneId::Terminal)
@@ -133,8 +188,11 @@ mod tests {
     }
 
     #[test]
-    fn default_workspaces_up_is_none() {
-        assert_eq!(default().neighbor(PaneId::Workspaces, Dir::Up), None);
+    fn default_workspaces_up_is_members() {
+        assert_eq!(
+            default().neighbor(PaneId::Workspaces, Dir::Up),
+            Some(PaneId::Members)
+        );
     }
 
     #[test]
@@ -162,7 +220,11 @@ mod tests {
 
     #[test]
     fn default_gitstatus_down_is_none() {
-        assert_eq!(default().neighbor(PaneId::GitStatus, Dir::Down), None);
+        // Workspaces(0,1) is below; should be the only candidate.
+        assert_eq!(
+            default().neighbor(PaneId::GitStatus, Dir::Down),
+            Some(PaneId::Workspaces)
+        );
     }
 
     // --- Custom layout: Workspaces(0,0) top-left, Terminal(1,0) top-right,

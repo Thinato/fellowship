@@ -103,6 +103,10 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
         Action::FocusPane(PaneId::Workspaces),
     );
     map.insert(
+        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+        Action::FocusPane(PaneId::Members),
+    );
+    map.insert(
         KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
         Action::FocusPane(PaneId::Terminal),
     );
@@ -314,6 +318,15 @@ mod tests {
         km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         let a = km.handle(&mut mode, char_key('l'), PaneId::Terminal);
         assert_eq!(a, Action::FocusDir(Dir::Right));
+    }
+
+    #[test]
+    fn prefix_then_m_focuses_members() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('m'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusPane(PaneId::Members));
     }
 
     #[test]

@@ -31,7 +31,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(main_area);
 
-    render_workspaces_pane(frame, app, left_area);
+    let [members_area, workspaces_area] =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(left_area);
+
+    render_members_pane(frame, app, members_area);
+    render_workspaces_pane(frame, app, workspaces_area);
     render_terminal_pane(frame, app, mid_area);
     render_gitstatus_pane(frame, app, right_area);
     render_status_bar(frame, app, status_area);
@@ -72,6 +76,11 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, name: &str) {
     );
 }
 
+fn render_members_pane(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == PaneId::Members;
+    app.members.render(frame, area, focused);
+}
+
 fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Workspaces;
     app.workspaces.render(frame, area, focused);
@@ -104,6 +113,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let prefix_indicator = matches!(app.input_mode, InputMode::AwaitingPrefixFollower);
 
     let focus_label = match app.focus {
+        PaneId::Members => "MEMBERS",
         PaneId::Workspaces => "WORKSPACES",
         PaneId::Terminal => "TERMINAL",
         PaneId::GitStatus => "GIT STATUS",
@@ -139,7 +149,7 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_width = 52u16;
-    let help_height = 18u16;
+    let help_height = 19u16;
     let x = area.x + area.width.saturating_sub(help_width) / 2;
     let y = area.y + area.height.saturating_sub(help_height) / 2;
     let popup_area = Rect::new(
@@ -151,6 +161,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 
     let help_text = vec![
         Line::from(""),
+        Line::from("  Ctrl+a m         Focus Members"),
         Line::from("  Ctrl+a e         Focus Workspaces"),
         Line::from("  Ctrl+a t         Focus Terminal"),
         Line::from("  Ctrl+a g         Focus Git Status"),

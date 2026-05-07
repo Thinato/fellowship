@@ -11,11 +11,13 @@ use crate::git;
 use crate::keymap::{Action, InputMode, Keymap, default_bindings};
 use crate::layout::PaneLayout;
 use crate::panes::gitstatus::GitStatusPane;
+use crate::panes::members::MembersPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneId {
+    Members,
     Workspaces,
     Terminal,
     GitStatus,
@@ -24,6 +26,7 @@ pub enum PaneId {
 pub struct App {
     pub focus: PaneId,
     pub input_mode: InputMode,
+    pub members: MembersPane,
     pub workspaces: WorkspacesPane,
     pub terminals: HashMap<PathBuf, TerminalPane>,
     pub git_status: GitStatusPane,
@@ -51,6 +54,7 @@ impl App {
         Self {
             focus: PaneId::Terminal,
             input_mode: InputMode::Normal,
+            members: MembersPane::new(),
             workspaces: WorkspacesPane::new(root_path.clone()),
             terminals,
             git_status: GitStatusPane::new(root_path.clone()),
@@ -120,9 +124,10 @@ impl App {
             }
             Action::CyclePane => {
                 self.focus = match self.focus {
+                    PaneId::Members => PaneId::Workspaces,
                     PaneId::Workspaces => PaneId::Terminal,
                     PaneId::Terminal => PaneId::GitStatus,
-                    PaneId::GitStatus => PaneId::Workspaces,
+                    PaneId::GitStatus => PaneId::Members,
                 };
             }
             Action::ToggleHelp => {
@@ -168,6 +173,9 @@ impl App {
             }
             PaneId::GitStatus => {
                 // git status pane has no key handling currently
+            }
+            PaneId::Members => {
+                self.members.handle_key(key);
             }
         }
         Ok(())
