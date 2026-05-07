@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
+use crate::agents::registry::AgentRegistry;
 use crate::event::Event;
 use crate::surface::{MemberId, Role, Surface};
 
@@ -21,6 +22,12 @@ pub struct MembersPane {
     /// `None` when bound to a Workspace surface.
     pub active: Option<MemberId>,
     list_state: ListState,
+}
+
+impl Default for MembersPane {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MembersPane {
@@ -83,7 +90,13 @@ impl MembersPane {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, focused: bool) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        focused: bool,
+        registry: &AgentRegistry,
+    ) {
         let border_color = if focused {
             Color::Cyan
         } else {
@@ -111,7 +124,11 @@ impl MembersPane {
             .map(|id| {
                 let is_active = self.active == Some(*id);
                 let marker = if is_active { "* " } else { "  " };
-                let label = format!("{}{}", marker, id.label());
+                let status_suffix = registry
+                    .get(&id.label())
+                    .map(|r| format!(" — {}", r.status))
+                    .unwrap_or_default();
+                let label = format!("{}{}{}", marker, id.label(), status_suffix);
                 let style = if is_active {
                     Style::default()
                         .fg(Color::Green)

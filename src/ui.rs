@@ -78,7 +78,8 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, name: &str) {
 
 fn render_members_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Members;
-    app.members.render(frame, area, focused);
+    app.members
+        .render(frame, area, focused, &app.agent_registry);
 }
 
 fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {

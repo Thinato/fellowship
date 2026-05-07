@@ -116,4 +116,27 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 5 — Runtime watcher + shared lib refactor
+
+- **Started:** 2026-05-06
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - **Library extraction (Path A from Phase 4 deferred decision).** Added `src/lib.rs` declaring all modules (`pub mod app; ...`). Both binaries (`fellowship`, `fellowship-ctl`) now `use fellowship::...` from this crate's library. `src/main.rs` slimmed: dropped `mod` declarations; imports are explicit `use fellowship::...`.
+  - **Shared runtime module (`src/runtime.rs`)** holds the cross-binary contract: `HeartbeatRecord`, `SpawnRequest`, `ReleaseRequest`, `JournalEntry`, the directory constants (`STATE_DIR`, `SPAWN_REQUEST_DIR`, `RELEASE_REQUEST_DIR`, `JOURNAL_FILE`), `now_ms()`, `runtime_dir()`, and `ensure_subdir()`. fellowship-ctl removes its local copies and imports from `fellowship::runtime`. Single source of truth for the JSON schemas.
+  - **`AgentRegistry` (`src/agents/registry.rs`)** — in-memory mirror of the on-disk `state/<agent-id>.json` heartbeats. Exposes `upsert`, `get`, and `load_from_state_dir` (boot-time scan). Phase 11 will layer the STALE/DEAD state machine on top using thresholds from config. 4 unit tests.
+  - **Notify watcher (`src/agents/watcher.rs`)** — `spawn_state_watcher` creates the `<runtime>/state/` dir if missing, registers a `notify::recommended_watcher`, and emits `Event::AgentHeartbeat(record)` on each create/modify of a `*.json` file. The watcher handle is held in `main::run` for the duration of the session. 3 unit tests cover `read_heartbeat` parse + `is_json_file` filter.
+  - **Session uuid scoping.** `main::main` allocates a per-session uuid via `uuid::Uuid::new_v4()` and sets `FELLOWSHIP_SESSION` in the process environment **before** any PTY spawn so spawned child shells (and any `fellowship-ctl` invocations from inside them) inherit it. Concurrent fellowship instances no longer collide on `~/.fellowship/runtime/`.
+  - **App wiring.** New `App.agent_registry: AgentRegistry` field. `App::new` now takes `runtime_root: &Path` and calls `agent_registry.load_from_state_dir(...)` at boot to ingest any pre-existing heartbeats. New event variant `Event::AgentHeartbeat(HeartbeatRecord)` handled by `App::handle_event` which calls `agent_registry.upsert(record)`.
+  - **Members pane status badge.** `MembersPane::render` now takes `registry: &AgentRegistry`. Each member row shows `marker + label + " — " + status` when a heartbeat record exists for that member's id. `ui::render_members_pane` plumbs the registry through.
+  - Cargo gate green: 99 tests pass total — 92 lib (was 82 before Phase 5; +10 = 3 runtime + 4 registry + 3 watcher) + 7 fellowship-ctl bin (was 8 before; one moved into the lib's runtime tests) + 0 integration.
+- **Notes:**
+  - The watcher uses `notify::recommended_watcher` (synchronous handler closure) which forwards into the existing tokio mpsc `event_tx`. Latency is dominated by the OS event delivery; on macOS this is fseventsd batching, typically sub-second.
+  - `is_json_file` was renamed from `&PathBuf` to `&Path` per clippy `ptr_arg`. The caller wraps in `|p| is_json_file(p)` because `Iterator::any` cannot coerce `fn(&Path)` directly when the iterator yields `&PathBuf`.
+  - `Default` impl added for `MembersPane` to satisfy `clippy::new_without_default`.
+  - The `EventKind::Any` arm in `is_heartbeat_event` is defensive — some platforms emit `Any` for filesystem events that don't decompose into `Create`/`Modify`. Without it, those events are dropped silently.
+  - **Acceptance test path (manual, deferred to user):** start fellowship → in another shell run `FELLOWSHIP_SESSION=<copy from running fellowship's env or `ls -t ~/.fellowship/runtime/`> fellowship-ctl heartbeat pm --status "alive"`. Within ~1s, the Members pane should re-render the PM row with `pm — alive`.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

@@ -4,24 +4,21 @@
 //! `~/.fellowship/runtime/<session>/` (which fellowship watches via `notify`)
 //! or shells out to a downstream tool (`gh`, `bd`).
 //!
-//! See `docs/plans/agentic-ui-v1.md` §3.3 for the design and §6 row 4 for the
-//! Phase 4 acceptance criteria.
+//! See `docs/plans/agentic-ui-v1.md` §3.3 for the design.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const STATE_DIR: &str = "state";
-const SPAWN_REQUEST_DIR: &str = "spawn-requests";
-const RELEASE_REQUEST_DIR: &str = "release-requests";
-const JOURNAL_FILE: &str = "journal.ndjson";
+use fellowship::runtime::{
+    HeartbeatRecord, JOURNAL_FILE, JournalEntry, RELEASE_REQUEST_DIR, ReleaseRequest,
+    SPAWN_REQUEST_DIR, STATE_DIR, SpawnRequest, ensure_subdir, now_ms, runtime_dir,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -80,69 +77,6 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct HeartbeatRecord {
-    agent_id: String,
-    last_seen_ms: u128,
-    status: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct SpawnRequest {
-    request_id: String,
-    branch: Option<String>,
-    single_shot: bool,
-    requested_at_ms: u128,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct ReleaseRequest {
-    request_id: String,
-    agent_id: String,
-    requested_at_ms: u128,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct JournalEntry {
-    ts_ms: u128,
-    agent_id: String,
-    message: String,
-}
-
-fn now_ms() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
-}
-
-/// Resolve the fellowship runtime directory.
-///
-/// Resolution order:
-/// 1. `FELLOWSHIP_RUNTIME_DIR` — explicit override (used by tests).
-/// 2. `~/.fellowship/runtime/$FELLOWSHIP_SESSION` — fellowship-set when
-///    spawning agent PTYs.
-/// 3. `~/.fellowship/runtime/default` — fallback for standalone `fellowship-ctl`
-///    runs without a fellowship session.
-fn runtime_dir() -> Result<PathBuf> {
-    if let Some(p) = std::env::var_os("FELLOWSHIP_RUNTIME_DIR") {
-        return Ok(PathBuf::from(p));
-    }
-    let home =
-        std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME env var is not set"))?;
-    let session = std::env::var("FELLOWSHIP_SESSION").unwrap_or_else(|_| "default".to_string());
-    Ok(PathBuf::from(home)
-        .join(".fellowship")
-        .join("runtime")
-        .join(session))
-}
-
-fn ensure_subdir(root: &Path, name: &str) -> Result<PathBuf> {
-    let p = root.join(name);
-    fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
-    Ok(p)
 }
 
 fn write_heartbeat(root: &Path, agent_id: &str, status: &str) -> Result<PathBuf> {
@@ -217,9 +151,6 @@ fn run_pr_comments(pr_number: u32, repo: Option<String>) -> Result<()> {
     let prefix = match repo {
         Some(r) => format!("repos/{}", r),
         None => {
-            // Let gh resolve the slug from the current repo. `gh api` accepts
-            // `:owner` and `:repo` placeholders only with `gh repo` context;
-            // simplest portable approach is to ask `gh repo view` for the slug.
             let out = Command::new("gh")
                 .args([
                     "repo",
@@ -256,8 +187,6 @@ fn run_pr_comments(pr_number: u32, repo: Option<String>) -> Result<()> {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
-        // gh api with --paginate emits a stream; for simplicity treat stdout as
-        // a single JSON array (the common shape) and re-emit each element.
         let value: serde_json::Value = serde_json::from_slice(&out.stdout)
             .with_context(|| format!("parsing gh api output for {}", ep))?;
         if let Some(arr) = value.as_array() {
@@ -265,7 +194,6 @@ fn run_pr_comments(pr_number: u32, repo: Option<String>) -> Result<()> {
                 println!("{}", serde_json::to_string(item)?);
             }
         } else {
-            // Single object; emit as one line.
             println!("{}", serde_json::to_string(&value)?);
         }
     }
@@ -394,24 +322,7 @@ mod tests {
         assert_eq!(parsed.agent_id, "engineer-3");
     }
 
-    #[test]
-    fn runtime_dir_honors_explicit_override_env_var() {
-        let tmp = TempDir::new().unwrap();
-        // SAFETY: this test is single-threaded by virtue of cargo test's
-        // default behavior; serial execution is not enforced here. If
-        // parallelism becomes a concern, gate this with `serial_test`.
-        unsafe {
-            std::env::set_var("FELLOWSHIP_RUNTIME_DIR", tmp.path());
-        }
-        let resolved = runtime_dir().unwrap();
-        assert_eq!(resolved, tmp.path());
-        unsafe {
-            std::env::remove_var("FELLOWSHIP_RUNTIME_DIR");
-        }
-    }
-
     /// Smoke check that the CLI parser accepts every documented invocation.
-    /// Exercises clap's derive output without running side effects.
     #[test]
     fn cli_parses_all_subcommands() {
         let cases = [

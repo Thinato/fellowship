@@ -5,6 +5,7 @@ use anyhow::Result;
 use crossterm::event::KeyEvent;
 use tokio::sync::mpsc;
 
+use crate::agents::registry::AgentRegistry;
 use crate::event::Event;
 use crate::gh;
 use crate::git;
@@ -14,6 +15,7 @@ use crate::panes::gitstatus::GitStatusPane;
 use crate::panes::members::MembersPane;
 use crate::panes::terminal::TerminalPane;
 use crate::panes::workspaces::WorkspacesPane;
+use crate::runtime::STATE_DIR;
 use crate::surface::{MemberId, Role, Surface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +33,7 @@ pub struct App {
     pub workspaces: WorkspacesPane,
     pub terminals: HashMap<Surface, TerminalPane>,
     pub git_status: GitStatusPane,
+    pub agent_registry: AgentRegistry,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
@@ -51,6 +54,7 @@ pub struct App {
 impl App {
     pub fn new(
         root_path: PathBuf,
+        runtime_root: &std::path::Path,
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
         startup_cmd: Option<String>,
@@ -76,6 +80,12 @@ impl App {
             terminals.insert(Surface::Member(id), pane);
         }
 
+        let mut agent_registry = AgentRegistry::new();
+        // Best-effort initial scan: any heartbeats already on disk (e.g. left
+        // over from a prior session under the same FELLOWSHIP_SESSION) get
+        // ingested before the watcher takes over.
+        let _ = agent_registry.load_from_state_dir(&runtime_root.join(STATE_DIR));
+
         Ok(Self {
             focus: PaneId::Terminal,
             input_mode: InputMode::Normal,
@@ -83,6 +93,7 @@ impl App {
             workspaces: WorkspacesPane::new(root_path.clone()),
             terminals,
             git_status: GitStatusPane::new(root_path.clone()),
+            agent_registry,
             show_help: false,
             should_quit: false,
             pending_delete: None,
@@ -313,6 +324,9 @@ impl App {
                     let _ = tx.send(Event::PrUpdated(pr));
                     let _ = tx.send(Event::WorktreesRefreshed(wts));
                 });
+            }
+            Event::AgentHeartbeat(record) => {
+                self.agent_registry.upsert(record);
             }
             Event::DiffUpdated(diff) => {
                 self.git_status.update_diff(diff);

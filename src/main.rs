@@ -1,14 +1,3 @@
-mod app;
-mod config;
-mod event;
-mod gh;
-mod git;
-mod keymap;
-mod layout;
-mod panes;
-mod surface;
-mod ui;
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -24,9 +13,13 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio::time;
 
-use app::App;
-use event::Event;
-use panes::terminal::TerminalPane;
+use fellowship::agents::watcher;
+use fellowship::app::App;
+use fellowship::config;
+use fellowship::event::Event;
+use fellowship::panes::terminal::TerminalPane;
+use fellowship::runtime;
+use fellowship::ui;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -35,13 +28,26 @@ async fn main() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().expect("cannot read cwd"));
 
+    // Allocate a per-session uuid so multiple fellowship instances don't collide
+    // on the runtime dir, and propagate it to spawned PTYs so agents inherit it.
+    let session_id = uuid::Uuid::new_v4().to_string();
+    // SAFETY: env mutation is unsafe in edition 2024. Done once before any
+    // PTY spawn so child processes inherit the value.
+    unsafe {
+        std::env::set_var("FELLOWSHIP_SESSION", &session_id);
+    }
+    let runtime_root = runtime::runtime_dir()?;
+    runtime::ensure_subdir(&runtime_root, runtime::STATE_DIR)?;
+    runtime::ensure_subdir(&runtime_root, runtime::SPAWN_REQUEST_DIR)?;
+    runtime::ensure_subdir(&runtime_root, runtime::RELEASE_REQUEST_DIR)?;
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run(&mut terminal, root_path).await;
+    let result = run(&mut terminal, root_path, runtime_root).await;
 
     disable_raw_mode()?;
     execute!(
@@ -57,6 +63,7 @@ async fn main() -> Result<()> {
 async fn run(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     root_path: PathBuf,
+    runtime_root: PathBuf,
 ) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
@@ -75,7 +82,16 @@ async fn run(
         event_tx.clone(),
         startup_cmd.as_deref(),
     )?;
-    let mut app = App::new(root_path.clone(), pty_pane, event_tx.clone(), startup_cmd)?;
+    let mut app = App::new(
+        root_path.clone(),
+        &runtime_root,
+        pty_pane,
+        event_tx.clone(),
+        startup_cmd,
+    )?;
+
+    // Watcher must outlive the run loop or notify drops the underlying watch.
+    let _watcher = watcher::spawn_state_watcher(&runtime_root, event_tx.clone())?;
 
     // Initial data load
     let _ = event_tx.send(Event::GitRefresh);
