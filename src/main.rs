@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio::time;
 
-use fellowship::agents::watcher;
+use fellowship::agents::{spawn as agent_spawn, watcher};
 use fellowship::app::App;
 use fellowship::beads;
 use fellowship::config;
@@ -23,7 +23,7 @@ use fellowship::guard;
 use fellowship::panes::terminal::TerminalPane;
 use fellowship::runtime;
 use fellowship::ui;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -77,6 +77,19 @@ async fn main() -> Result<()> {
         "safe-git shims installed for agent surfaces"
     );
 
+    // Probe `claude` once at boot. When absent, member surfaces fall back to
+    // a placeholder banner that drops the user into a normal bash so
+    // fellowship still runs in dev environments without claude installed.
+    let claude_available = agent_spawn::claude_available_at_boot();
+    if claude_available {
+        info!("claude CLI detected — agent surfaces will exec real claude");
+    } else {
+        warn!(
+            "claude CLI not found on PATH — agent surfaces will boot a placeholder bash. \
+             Install claude code (https://claude.com/claude-code) and restart fellowship."
+        );
+    }
+
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -89,6 +102,7 @@ async fn main() -> Result<()> {
         runtime_root,
         session_id.clone(),
         agent_path,
+        claude_available,
     )
     .await;
 
@@ -114,6 +128,7 @@ async fn run(
     runtime_root: PathBuf,
     session_id: String,
     agent_path: String,
+    claude_available: bool,
 ) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<Event>();
 
@@ -137,6 +152,7 @@ async fn run(
         &runtime_root,
         session_id,
         &agent_path,
+        claude_available,
         pty_pane,
         event_tx.clone(),
         startup_cmd,

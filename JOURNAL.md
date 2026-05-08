@@ -282,4 +282,32 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 10 — Role prompts (real claude invocations) + PM default focus
+
+- **Started:** 2026-05-08
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - **Five real role prompt files** at `agents/{pm,orchestrator,architect,recon,engineer}.md`, replacing the Phase 0 placeholders. Each prompt covers: identity & tone; primary responsibilities; allowed tools (with `fellowship-ctl` bead/heartbeat/log/spawn-engineer/release-engineer/pr-comments commands explicit); forbidden commands (`git merge`, `git push --force`, `git push origin (main|master)`, `gh pr merge`, plus role-specific prohibitions); heartbeat protocol; coordination bus (beads only); and concrete success criteria. Engineer prompt encodes the Q2 self-claim model (`bd ready --label role:engineer` + `bd update --claim`) and the Q4 v1 path for review feedback (`fellowship-ctl pr-comments`).
+  - **`src/agents/spawn.rs`** new module owns spawn planning. `prompt_for(Role)` returns the role's markdown via `include_str!` (prompts are baked into the binary; no runtime file IO). `default_model_for(Role)` returns `Some("claude-haiku-4-5")` for Recon and `None` for the rest, per Q3 resolution. `plan_for(role, agent_id, claude_available) -> SpawnPlan` returns the bash command line and the `AGENT_PROMPT` / `AGENT_ID` / optional `AGENT_MODEL` env vars. `claude_available_at_boot()` probes once via `claude --version`.
+  - **Real claude invocation shape** when claude is on PATH:
+    - `exec claude --dangerously-skip-permissions --append-system-prompt "$AGENT_PROMPT"` (PM, Orchestrator, Architect, Engineer)
+    - `exec claude --dangerously-skip-permissions --model "$AGENT_MODEL" --append-system-prompt "$AGENT_PROMPT"` (Recon, with `AGENT_MODEL=claude-haiku-4-5`)
+    - The prompt is delivered via env var (not on the command line) to avoid shell quoting issues with multi-line markdown. `exec` replaces bash so the PTY is owned by claude directly; when claude exits, the PTY closes (Phase 11 watchdog will pick that up later).
+  - **Claude-missing path (option 2A from Phase 10 prompt)** falls back to a banner that drops the user into bash with `AGENT_PROMPT` still set, plus a `warn!` log on boot. Fellowship still functions as a worktree TUI on machines without claude installed.
+  - **PM default focus (Q5 resolution)** wired in `App::new`. When `claude_available`, the boot state has `active_surface = Surface::Member(MemberId::singleton(Role::Pm))` and `members.active = Some(pm)`, so the user lands on PM's PTY immediately. When `claude_available = false`, falls back to the workspace surface as before.
+  - **Engineer spawn now uses the helper** in `App::spawn_engineer` so engineers get the same real-claude shape and inherit the Engineer role prompt.
+  - **`App.claude_available: bool` field** carries the boot probe through the session so spawn decisions stay consistent across the lifetime.
+  - **`#[allow(clippy::too_many_arguments)]`** on `App::new` (8 params now). Bundling into a config struct is a future cleanup.
+  - 6 new unit tests in `agents::spawn::tests`: every role's prompt is non-empty and contains a `Role:` header; `default_model_for` matrix; real-invocation shape (real claude line + env keys including PM-specific prompt content); Recon model wiring; missing-claude banner shape with `AGENT_PROMPT` still present; engineer agent_id propagation.
+  - Cargo gate green: 139 tests total — 132 lib (was 126; +6 spawn) + 7 fellowship-ctl bin + 0 integration.
+- **Notes:**
+  - **No new config keys** — Phase 10 ships the "1A" path (light config). The role prompts are baked in via `include_str!` and Recon's haiku model is hardcoded. Phase 10.5 (or later) wires `[agents]` and `[agents.<role>]` blocks per plan §5 if/when users want per-deployment overrides.
+  - **`include_str!` cost:** each agent prompt is ~80–120 lines of markdown, so the binary is ~5KB heavier. Negligible. The benefit is that `cargo install --path .` produces a self-contained binary that doesn't need `agents/` shipped alongside.
+  - **`exec`-into-claude design** means the PTY's bash exits as soon as claude starts. If the user wants to drop back to bash without exiting fellowship, they'd need to kill the PTY (which Phase 11 watchdog would auto-restart). Acceptable — agent surfaces are not meant for interactive shell work.
+  - The `Phase 3 placeholder` comment block was kept in `App::new` because the loop structure is unchanged; only the spawn shape moved into the helper. Phase 3 is still the right reference for "why each role gets a singleton PTY at boot."
+  - `claude --version` is the cheapest probe; takes ~50ms. Once-at-boot is the right cadence.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

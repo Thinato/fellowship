@@ -55,6 +55,10 @@ pub struct App {
     /// PATH override applied to every member-surface PTY. Includes the
     /// `~/.fellowship/bin/` shim dir as the first entry.
     pub agent_path: String,
+    /// Whether the `claude` CLI was found on PATH at boot. Drives the
+    /// real-vs-banner spawn shape in [`agents::spawn::plan_for`] and the
+    /// PM-default-focus decision in `App::new`.
+    pub claude_available: bool,
     /// Max engineer PTYs allowed concurrently (Phase 9 hardcodes 4; Phase 10
     /// pulls this from `Config::agents.max_engineers`).
     pub max_engineers: usize,
@@ -78,11 +82,16 @@ pub struct App {
 }
 
 impl App {
+    // Eight params is past clippy's default. The constructor accumulates
+    // session-wide dependencies (workspace, runtime, agents, env). Bundling
+    // them into a config struct is a future cleanup; out of scope for Phase 10.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         root_path: PathBuf,
         runtime_root: &std::path::Path,
         session_id: String,
         agent_path: &str,
+        claude_available: bool,
         terminal: TerminalPane,
         event_tx: mpsc::UnboundedSender<Event>,
         startup_cmd: Option<String>,
@@ -99,20 +108,23 @@ impl App {
         // Phase 10 replaces the banner with the real `claude` invocation.
         for role in [Role::Pm, Role::Orchestrator, Role::Architect, Role::Recon] {
             let id = MemberId::singleton(role);
-            let banner = format!(
-                "echo '[{}] placeholder — real prompt lands in Phase 10'; exec bash",
-                role.as_str()
-            );
-            // Member surfaces inherit the safe-git shim via PATH so any
-            // forbidden git/gh invocation (Phase 10's real claude agents)
-            // is rejected before reaching the real binaries.
+            let plan = crate::agents::spawn::plan_for(role, &id.label(), claude_available);
+            // Compose env: PATH override (safe-git shim) + plan-supplied
+            // AGENT_PROMPT / AGENT_ID / optional AGENT_MODEL.
+            let mut env_owned: Vec<(String, String)> =
+                vec![("PATH".to_string(), agent_path.to_string())];
+            env_owned.extend(plan.extra_env.into_iter());
+            let env_refs: Vec<(&str, &str)> = env_owned
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
             let pane = TerminalPane::spawn_with_env(
                 rows,
                 cols,
                 &root_path,
                 event_tx.clone(),
-                Some(&banner),
-                &[("PATH", agent_path)],
+                Some(&plan.startup_cmd),
+                &env_refs,
             )?;
             terminals.insert(Surface::Member(id), pane);
         }
@@ -123,10 +135,23 @@ impl App {
         // ingested before the watcher takes over.
         let _ = agent_registry.load_from_state_dir(&runtime_root.join(STATE_DIR));
 
+        // Q5 resolution: when agents are usable (claude_available), boot with
+        // the user already focused on the PM member surface so they can start
+        // chatting immediately. When claude is missing, keep the workspace
+        // active so fellowship still works as a plain worktree TUI.
+        let mut members_pane = MembersPane::new();
+        let active_surface = if claude_available {
+            let pm = MemberId::singleton(Role::Pm);
+            members_pane.set_active_member(Some(pm));
+            Surface::Member(pm)
+        } else {
+            initial_surface
+        };
+
         Ok(Self {
             focus: PaneId::Terminal,
             input_mode: InputMode::Normal,
-            members: MembersPane::new(),
+            members: members_pane,
             workspaces: WorkspacesPane::new(root_path.clone()),
             terminals,
             git_status: GitStatusPane::new(root_path.clone()),
@@ -136,12 +161,13 @@ impl App {
             beads: Vec::new(),
             session_id,
             agent_path: agent_path.to_string(),
+            claude_available,
             max_engineers: 4,
             spawn_queue: VecDeque::new(),
             show_help: false,
             should_quit: false,
             pending_delete: None,
-            active_surface: initial_surface,
+            active_surface,
             last_workspace_path: root_path,
             last_term_size,
             event_tx,
@@ -451,26 +477,33 @@ impl App {
         let repo = self.last_workspace_path.clone();
         let worktree_path = git::add_worktree(&repo, branch).await?;
 
-        let banner = format!(
-            "echo '[{}] placeholder — Phase 10 will replace this with a real claude invocation'; \
-             exec bash",
-            id.label()
-        );
-        let (rows, cols) = self.last_term_size;
         let agent_id_str = id.label();
-        let bead_label = req.request_id.clone();
-        let extra_env: Vec<(&str, &str)> = vec![
-            ("PATH", self.agent_path.as_str()),
-            ("AGENT_ID", agent_id_str.as_str()),
-            ("FELLOWSHIP_SPAWN_REQUEST_ID", bead_label.as_str()),
+        let plan =
+            crate::agents::spawn::plan_for(Role::Engineer, &agent_id_str, self.claude_available);
+
+        // Compose env: PATH override (safe-git shim), plan-supplied vars
+        // (AGENT_PROMPT, AGENT_ID, optional AGENT_MODEL), plus the spawn
+        // request id for traceability back to the originating intent file.
+        let mut env_owned: Vec<(String, String)> = vec![
+            ("PATH".to_string(), self.agent_path.clone()),
+            (
+                "FELLOWSHIP_SPAWN_REQUEST_ID".to_string(),
+                req.request_id.clone(),
+            ),
         ];
+        env_owned.extend(plan.extra_env.into_iter());
+        let env_refs: Vec<(&str, &str)> = env_owned
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let (rows, cols) = self.last_term_size;
         let pane = TerminalPane::spawn_with_env(
             rows,
             cols,
             &worktree_path,
             self.event_tx.clone(),
-            Some(&banner),
-            &extra_env,
+            Some(&plan.startup_cmd),
+            &env_refs,
         )?;
         self.terminals.insert(Surface::Member(id), pane);
         self.members.add_member(id);
