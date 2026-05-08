@@ -108,23 +108,15 @@ impl App {
         // Phase 10 replaces the banner with the real `claude` invocation.
         for role in [Role::Pm, Role::Orchestrator, Role::Architect, Role::Recon] {
             let id = MemberId::singleton(role);
-            let plan = crate::agents::spawn::plan_for(role, &id.label(), claude_available);
-            // Compose env: PATH override (safe-git shim) + plan-supplied
-            // AGENT_PROMPT / AGENT_ID / optional AGENT_MODEL.
-            let mut env_owned: Vec<(String, String)> =
-                vec![("PATH".to_string(), agent_path.to_string())];
-            env_owned.extend(plan.extra_env.into_iter());
-            let env_refs: Vec<(&str, &str)> = env_owned
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            let pane = TerminalPane::spawn_with_env(
+            let action = crate::agents::spawn::plan_for(role, &id.label(), claude_available);
+            let base_env = vec![("PATH".to_string(), agent_path.to_string())];
+            let pane = crate::agents::spawn::execute(
+                &action,
                 rows,
                 cols,
                 &root_path,
                 event_tx.clone(),
-                Some(&plan.startup_cmd),
-                &env_refs,
+                &base_env,
             )?;
             terminals.insert(Surface::Member(id), pane);
         }
@@ -478,32 +470,27 @@ impl App {
         let worktree_path = git::add_worktree(&repo, branch).await?;
 
         let agent_id_str = id.label();
-        let plan =
+        let action =
             crate::agents::spawn::plan_for(Role::Engineer, &agent_id_str, self.claude_available);
 
-        // Compose env: PATH override (safe-git shim), plan-supplied vars
-        // (AGENT_PROMPT, AGENT_ID, optional AGENT_MODEL), plus the spawn
-        // request id for traceability back to the originating intent file.
-        let mut env_owned: Vec<(String, String)> = vec![
+        // Base env: PATH (safe-git shim) + spawn request id for traceability.
+        // The action's own env (AGENT_PROMPT / AGENT_ID / optional
+        // AGENT_MODEL) is merged on top by `execute`.
+        let base_env = vec![
             ("PATH".to_string(), self.agent_path.clone()),
             (
                 "FELLOWSHIP_SPAWN_REQUEST_ID".to_string(),
                 req.request_id.clone(),
             ),
         ];
-        env_owned.extend(plan.extra_env.into_iter());
-        let env_refs: Vec<(&str, &str)> = env_owned
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
         let (rows, cols) = self.last_term_size;
-        let pane = TerminalPane::spawn_with_env(
+        let pane = crate::agents::spawn::execute(
+            &action,
             rows,
             cols,
             &worktree_path,
             self.event_tx.clone(),
-            Some(&plan.startup_cmd),
-            &env_refs,
+            &base_env,
         )?;
         self.terminals.insert(Surface::Member(id), pane);
         self.members.add_member(id);

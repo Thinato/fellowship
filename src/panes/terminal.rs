@@ -207,14 +207,6 @@ impl TerminalPane {
         startup_cmd: Option<&str>,
         extra_env: &[(&str, &str)],
     ) -> Result<Self> {
-        let pty_system = native_pty_system();
-        let pair = pty_system.openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
-
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(cwd);
@@ -222,6 +214,48 @@ impl TerminalPane {
         for (k, v) in extra_env {
             cmd.env(*k, *v);
         }
+        Self::spawn_command(rows, cols, tx, cmd, startup_cmd)
+    }
+
+    /// Spawn an arbitrary program directly inside the PTY (no shell wrapper).
+    /// Used by member surfaces that exec `claude` with a multi-line system
+    /// prompt as a real argv element — passing the prompt through `bash -c`
+    /// is too brittle (quoting, init-time write races).
+    pub fn spawn_program_with_env(
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        tx: UnboundedSender<Event>,
+        program: &str,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new(program);
+        for a in args {
+            cmd.arg(*a);
+        }
+        cmd.cwd(cwd);
+        cmd.env("TERM", "xterm-256color");
+        for (k, v) in extra_env {
+            cmd.env(*k, *v);
+        }
+        Self::spawn_command(rows, cols, tx, cmd, None)
+    }
+
+    fn spawn_command(
+        rows: u16,
+        cols: u16,
+        tx: UnboundedSender<Event>,
+        cmd: CommandBuilder,
+        startup_cmd: Option<&str>,
+    ) -> Result<Self> {
+        let pty_system = native_pty_system();
+        let pair = pty_system.openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })?;
 
         let child = pair.slave.spawn_command(cmd)?;
         // Must drop slave so EOF propagates when child exits

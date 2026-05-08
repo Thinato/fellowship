@@ -1,20 +1,27 @@
 //! Per-role agent PTY spawn planning.
 //!
-//! Resolves the command line and environment that go into a member-surface
-//! PTY. The role markdown prompts are baked into the binary via `include_str!`
-//! so deployments don't need to ship the `agents/` directory alongside the
-//! `fellowship` binary.
+//! Resolves the program (or shell-banner) and environment that go into a
+//! member-surface PTY. The role markdown prompts are baked into the binary
+//! via `include_str!` so deployments don't need to ship the `agents/`
+//! directory alongside the `fellowship` binary.
 //!
 //! When the `claude` CLI is available on the agent's PATH (resolved at boot
-//! by `claude_available_at_boot`), the spawn plan exec's a real claude
-//! invocation. When it isn't, the plan falls back to a placeholder banner
-//! (Phase 3 shape) so fellowship still boots in environments that don't
-//! have claude installed yet — the user can install it later and restart.
+//! by `claude_available_at_boot`), `plan_for` returns a [`SpawnAction::Program`]
+//! that exec's `claude` directly with the prompt as a real argv element — no
+//! shell wrapper, no quoting hazards. When claude isn't available it returns
+//! a [`SpawnAction::Banner`] that drops the user into a shell with a hint.
 //!
 //! See `docs/plans/agentic-ui-v1.md` §6 row 10 (Phase 10) and §3.7
 //! (claude is invoked with `--dangerously-skip-permissions`; the safe-git
 //! shim on PATH is the load-bearing guardrail against forbidden git ops).
 
+use std::path::Path;
+
+use anyhow::Result;
+use tokio::sync::mpsc::UnboundedSender;
+
+use crate::event::Event;
+use crate::panes::terminal::TerminalPane;
 use crate::surface::Role;
 
 /// Markdown prompts baked into the binary at compile time. Updates to the
@@ -25,16 +32,22 @@ const ARCHITECT_PROMPT: &str = include_str!("../../agents/architect.md");
 const RECON_PROMPT: &str = include_str!("../../agents/recon.md");
 const ENGINEER_PROMPT: &str = include_str!("../../agents/engineer.md");
 
-/// What to feed `TerminalPane::spawn_with_env` for a given role. The caller
-/// appends any extra env it wants (notably `PATH` with the safe-git shim).
+/// What `App` should do to spawn this member's PTY.
 #[derive(Debug, Clone)]
-pub struct SpawnPlan {
-    /// Shell command line that bash exec's. Either a real `claude …`
-    /// invocation or a placeholder banner that drops the user into bash.
-    pub startup_cmd: String,
-    /// Owned env pairs the caller must apply. Always contains `AGENT_PROMPT`
-    /// and `AGENT_ID`; may also contain `AGENT_MODEL`.
-    pub extra_env: Vec<(String, String)>,
+pub enum SpawnAction {
+    /// Launch a binary directly in the PTY (no shell wrapper).
+    Program {
+        program: String,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    },
+    /// Launch the user's $SHELL with a one-shot startup command. Used for
+    /// the missing-claude path and any future fallbacks that genuinely need
+    /// a shell.
+    Banner {
+        startup_cmd: String,
+        env: Vec<(String, String)>,
+    },
 }
 
 pub fn prompt_for(role: Role) -> &'static str {
@@ -56,42 +69,46 @@ pub fn default_model_for(role: Role) -> Option<&'static str> {
     }
 }
 
-/// Build the spawn plan for `role` with member label `agent_id` (e.g.
-/// `"pm"`, `"engineer-1"`). Reads the `claude_available` flag (computed at
-/// boot) to decide between the real and placeholder spawn shapes.
-pub fn plan_for(role: Role, agent_id: &str, claude_available: bool) -> SpawnPlan {
+/// Build the spawn action for `role` with member label `agent_id`. The
+/// `claude_available` flag (computed once at boot via
+/// [`claude_available_at_boot`]) selects the real-vs-banner shape.
+pub fn plan_for(role: Role, agent_id: &str, claude_available: bool) -> SpawnAction {
     let prompt = prompt_for(role);
     let model = default_model_for(role);
 
-    let mut extra_env = vec![
+    // AGENT_PROMPT and AGENT_ID are exposed via env for diagnostics
+    // (`echo $AGENT_PROMPT` from another shell connected to the PTY) and
+    // for any agent tooling that wants to re-read the role prompt without
+    // command-line parsing.
+    let mut env = vec![
         ("AGENT_PROMPT".to_string(), prompt.to_string()),
         ("AGENT_ID".to_string(), agent_id.to_string()),
     ];
     if let Some(m) = model {
-        extra_env.push(("AGENT_MODEL".to_string(), m.to_string()));
+        env.push(("AGENT_MODEL".to_string(), m.to_string()));
     }
 
-    let startup_cmd = if claude_available {
-        // The prompt is delivered via the AGENT_PROMPT env var to avoid
-        // shell-quoting hell on multi-line markdown. Same for the model.
-        // exec replaces bash so the PTY is owned by claude directly; when
-        // claude exits, the PTY closes (Phase 11 watchdog will restart).
-        if model.is_some() {
-            r#"exec claude --dangerously-skip-permissions --model "$AGENT_MODEL" --append-system-prompt "$AGENT_PROMPT""#.to_string()
-        } else {
-            r#"exec claude --dangerously-skip-permissions --append-system-prompt "$AGENT_PROMPT""#
-                .to_string()
+    if claude_available {
+        let mut args: Vec<String> = vec![
+            "--dangerously-skip-permissions".to_string(),
+            "--append-system-prompt".to_string(),
+            prompt.to_string(),
+        ];
+        if let Some(m) = model {
+            args.push("--model".to_string());
+            args.push(m.to_string());
+        }
+        SpawnAction::Program {
+            program: "claude".to_string(),
+            args,
+            env,
         }
     } else {
-        format!(
+        let startup_cmd = format!(
             "echo '[{agent_id}] claude not on PATH — install it and restart fellowship'; \
              echo '(role prompt is in $AGENT_PROMPT)'; exec bash"
-        )
-    };
-
-    SpawnPlan {
-        startup_cmd,
-        extra_env,
+        );
+        SpawnAction::Banner { startup_cmd, env }
     }
 }
 
@@ -105,6 +122,53 @@ pub fn claude_available_at_boot() -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Spawn a member-surface PTY by dispatching the [`SpawnAction`].
+///
+/// `extra_env` is merged on top of the action's own env (the action's keys
+/// take precedence on collision; the caller's `extra_env` is the base).
+pub fn execute(
+    action: &SpawnAction,
+    rows: u16,
+    cols: u16,
+    cwd: &Path,
+    tx: UnboundedSender<Event>,
+    base_env: &[(String, String)],
+) -> Result<TerminalPane> {
+    let merged_env = merge_env(base_env, action_env(action));
+    let env_refs: Vec<(&str, &str)> = merged_env
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    match action {
+        SpawnAction::Program { program, args, .. } => {
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            TerminalPane::spawn_program_with_env(rows, cols, cwd, tx, program, &arg_refs, &env_refs)
+        }
+        SpawnAction::Banner { startup_cmd, .. } => {
+            TerminalPane::spawn_with_env(rows, cols, cwd, tx, Some(startup_cmd), &env_refs)
+        }
+    }
+}
+
+fn action_env(action: &SpawnAction) -> &[(String, String)] {
+    match action {
+        SpawnAction::Program { env, .. } => env,
+        SpawnAction::Banner { env, .. } => env,
+    }
+}
+
+fn merge_env(base: &[(String, String)], overrides: &[(String, String)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = base.to_vec();
+    for (k, v) in overrides {
+        if let Some(existing) = out.iter_mut().find(|(ek, _)| ek == k) {
+            existing.1 = v.clone();
+        } else {
+            out.push((k.clone(), v.clone()));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -136,61 +200,83 @@ mod tests {
     }
 
     #[test]
-    fn plan_with_claude_available_emits_real_invocation() {
-        let plan = plan_for(Role::Pm, "pm", true);
-        assert!(plan.startup_cmd.starts_with("exec claude"));
-        assert!(plan.startup_cmd.contains("--dangerously-skip-permissions"));
-        assert!(plan.startup_cmd.contains("--append-system-prompt"));
-        assert!(
-            !plan.startup_cmd.contains("--model"),
-            "PM should not pass --model by default"
-        );
-
-        let env_keys: Vec<&str> = plan.extra_env.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(env_keys.contains(&"AGENT_PROMPT"));
-        assert!(env_keys.contains(&"AGENT_ID"));
-        assert!(!env_keys.contains(&"AGENT_MODEL"));
-
-        let prompt = plan
-            .extra_env
-            .iter()
-            .find(|(k, _)| k == "AGENT_PROMPT")
-            .unwrap();
-        assert!(prompt.1.contains("Product Manager"));
+    fn plan_with_claude_available_emits_program_action() {
+        let action = plan_for(Role::Pm, "pm", true);
+        match action {
+            SpawnAction::Program { program, args, env } => {
+                assert_eq!(program, "claude");
+                assert!(args.iter().any(|a| a == "--dangerously-skip-permissions"));
+                assert!(args.iter().any(|a| a == "--append-system-prompt"));
+                assert!(args.iter().any(|a| a.contains("Product Manager")));
+                assert!(!args.iter().any(|a| a == "--model"));
+                let env_keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+                assert!(env_keys.contains(&"AGENT_PROMPT"));
+                assert!(env_keys.contains(&"AGENT_ID"));
+                assert!(!env_keys.contains(&"AGENT_MODEL"));
+            }
+            other => panic!("expected Program action, got {other:?}"),
+        }
     }
 
     #[test]
-    fn plan_for_recon_passes_haiku_model() {
-        let plan = plan_for(Role::Recon, "recon", true);
-        assert!(plan.startup_cmd.contains("--model"));
-        let env: std::collections::HashMap<_, _> = plan
-            .extra_env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        assert_eq!(env.get("AGENT_MODEL"), Some(&"claude-haiku-4-5"));
+    fn plan_for_recon_passes_haiku_model_in_argv_and_env() {
+        let action = plan_for(Role::Recon, "recon", true);
+        match action {
+            SpawnAction::Program { args, env, .. } => {
+                let model_idx = args
+                    .iter()
+                    .position(|a| a == "--model")
+                    .expect("--model arg missing");
+                assert_eq!(args[model_idx + 1], "claude-haiku-4-5");
+                let env_map: std::collections::HashMap<_, _> =
+                    env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                assert_eq!(env_map.get("AGENT_MODEL"), Some(&"claude-haiku-4-5"));
+            }
+            other => panic!("expected Program action, got {other:?}"),
+        }
     }
 
     #[test]
-    fn plan_with_claude_missing_uses_placeholder_banner() {
-        let plan = plan_for(Role::Engineer, "engineer-1", false);
-        assert!(plan.startup_cmd.contains("claude not on PATH"));
-        assert!(plan.startup_cmd.contains("exec bash"));
-        assert!(!plan.startup_cmd.contains("exec claude"));
-        // AGENT_PROMPT is still set so the user can `echo "$AGENT_PROMPT"`
-        // to read what the prompt would have been.
-        let env_keys: Vec<&str> = plan.extra_env.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(env_keys.contains(&"AGENT_PROMPT"));
+    fn plan_with_claude_missing_uses_banner_action() {
+        let action = plan_for(Role::Engineer, "engineer-1", false);
+        match action {
+            SpawnAction::Banner { startup_cmd, env } => {
+                assert!(startup_cmd.contains("claude not on PATH"));
+                assert!(startup_cmd.contains("exec bash"));
+                let env_keys: Vec<&str> = env.iter().map(|(k, _)| k.as_str()).collect();
+                assert!(env_keys.contains(&"AGENT_PROMPT"));
+            }
+            other => panic!("expected Banner action, got {other:?}"),
+        }
     }
 
     #[test]
-    fn plan_for_engineer_includes_agent_id() {
-        let plan = plan_for(Role::Engineer, "engineer-7", true);
-        let env: std::collections::HashMap<_, _> = plan
-            .extra_env
+    fn plan_for_engineer_includes_agent_id_in_env() {
+        let action = plan_for(Role::Engineer, "engineer-7", true);
+        let env: std::collections::HashMap<_, _> = action_env(&action)
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         assert_eq!(env.get("AGENT_ID"), Some(&"engineer-7"));
+    }
+
+    #[test]
+    fn merge_env_overrides_take_precedence() {
+        let base = vec![
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("FOO".to_string(), "base".to_string()),
+        ];
+        let overrides = vec![
+            ("FOO".to_string(), "override".to_string()),
+            ("BAR".to_string(), "new".to_string()),
+        ];
+        let merged = merge_env(&base, &overrides);
+        let map: std::collections::HashMap<_, _> = merged
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(map.get("FOO"), Some(&"override"));
+        assert_eq!(map.get("PATH"), Some(&"/usr/bin"));
+        assert_eq!(map.get("BAR"), Some(&"new"));
     }
 }
