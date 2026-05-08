@@ -634,6 +634,10 @@ impl App {
         if let Some(mut old) = self.terminals.remove(&surface) {
             old.shutdown();
         }
+        // Drop the prior heartbeat so the new PTY isn't judged Dead against
+        // the previous record. Liveness becomes Unknown (no badge) until the
+        // restarted agent writes its first heartbeat.
+        self.agent_registry.clear(&id.label());
         let cwd: PathBuf = match id.role {
             Role::Engineer => self.engineer_worktrees.get(&id).cloned().ok_or_else(|| {
                 anyhow::anyhow!("no recorded worktree for engineer {}", id.label())

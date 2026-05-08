@@ -49,6 +49,14 @@ impl AgentRegistry {
         self.records.get(agent_id)
     }
 
+    /// Drop the heartbeat record for `agent_id`. Used by the watchdog after
+    /// a restart so the new PTY isn't immediately re-judged "Dead" against
+    /// the previous (stale) heartbeat — `liveness_for` will return
+    /// `Unknown` until the restarted agent produces its first heartbeat.
+    pub fn clear(&mut self, agent_id: &str) {
+        self.records.remove(agent_id);
+    }
+
     /// Derive `Liveness` for an agent given the current wall-clock time in
     /// epoch milliseconds. `now_ms` is supplied by the caller so tests can
     /// drive deterministic state transitions without waiting in real time.
@@ -148,6 +156,21 @@ mod tests {
         let mut reg = AgentRegistry::new();
         let n = reg.load_from_state_dir(&tmp.path().join("nope")).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn clear_removes_record_so_liveness_becomes_unknown() {
+        let mut reg = AgentRegistry::new();
+        reg.upsert(record("pm", "alive", 0));
+        // Before clear: would be Dead at distant `now_ms`.
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        assert_eq!(reg.liveness_for("pm", dead_ms), Liveness::Dead);
+        reg.clear("pm");
+        assert!(reg.get("pm").is_none());
+        assert_eq!(reg.liveness_for("pm", dead_ms), Liveness::Unknown);
+        // Idempotent.
+        reg.clear("pm");
+        reg.clear("never-existed");
     }
 
     #[test]
