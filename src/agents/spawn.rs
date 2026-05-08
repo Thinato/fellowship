@@ -139,9 +139,10 @@ pub fn plan_for(
     };
 
     // After the agent (or banner) exits, replace this short-lived shell with
-    // a fresh interactive `$SHELL` so the PTY stays usable for the human.
-    // Using `${SHELL:-/bin/bash}` keeps it portable when `$SHELL` is unset.
-    let command_line = format!("{leading}; exec ${{SHELL:-/bin/bash}} -i");
+    // a fresh login + interactive `$SHELL` so the PTY stays usable for the
+    // human, with full `.zprofile`/`.zshrc` (oh-my-zsh, etc.) loaded.
+    // `${SHELL:-/bin/bash}` keeps it portable when `$SHELL` is unset.
+    let command_line = format!("{leading}; exec ${{SHELL:-/bin/bash}} -li");
 
     SpawnAction { command_line, env }
 }
@@ -177,13 +178,18 @@ pub fn execute(
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    // `-l` makes the wrapper a login shell so .zprofile / .profile load
+    // before claude runs (PATH, OAuth token paths, etc. that the user's
+    // normal terminal gets). `-c` runs the supplied command line. The
+    // command line itself ends with `exec $SHELL -li` so when claude
+    // exits the PTY drops into a full login + interactive shell.
     TerminalPane::spawn_program_with_env(
         rows,
         cols,
         cwd,
         tx,
         &shell,
-        &["-c", action.command_line.as_str()],
+        &["-l", "-c", action.command_line.as_str()],
         &env_refs,
     )
 }
@@ -284,7 +290,7 @@ mod tests {
         assert!(
             action
                 .command_line
-                .ends_with("; exec ${SHELL:-/bin/bash} -i"),
+                .ends_with("; exec ${SHELL:-/bin/bash} -li"),
             "missing interactive shell drop: {}",
             action.command_line
         );
@@ -323,7 +329,7 @@ mod tests {
         assert!(
             action
                 .command_line
-                .ends_with("; exec ${SHELL:-/bin/bash} -i"),
+                .ends_with("; exec ${SHELL:-/bin/bash} -li"),
             "missing interactive shell drop: {}",
             action.command_line
         );

@@ -4,6 +4,21 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+
+/// `portable_pty::CommandBuilder` starts with an empty env, so spawned
+/// processes don't see HOME, USER, $PATH, claude/anthropic auth state, etc.
+/// Forward the parent process env explicitly. Callers may override individual
+/// vars afterwards (TERM, PATH for the safe-git shim, AGENT_*).
+///
+/// `TERM` is explicitly skipped because every caller sets `xterm-256color`.
+fn inherit_parent_env(cmd: &mut CommandBuilder) {
+    for (k, v) in std::env::vars_os() {
+        if k == "TERM" {
+            continue;
+        }
+        cmd.env(&k, &v);
+    }
+}
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -210,6 +225,7 @@ impl TerminalPane {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
         let mut cmd = CommandBuilder::new(&shell);
         cmd.cwd(cwd);
+        inherit_parent_env(&mut cmd);
         cmd.env("TERM", "xterm-256color");
         for (k, v) in extra_env {
             cmd.env(*k, *v);
@@ -218,9 +234,8 @@ impl TerminalPane {
     }
 
     /// Spawn an arbitrary program directly inside the PTY (no shell wrapper).
-    /// Used by member surfaces that exec `claude` with a multi-line system
-    /// prompt as a real argv element — passing the prompt through `bash -c`
-    /// is too brittle (quoting, init-time write races).
+    /// Used by member surfaces that need to launch a specific binary with
+    /// arguments passed as real argv (no shell quoting hazards).
     pub fn spawn_program_with_env(
         rows: u16,
         cols: u16,
@@ -235,6 +250,7 @@ impl TerminalPane {
             cmd.arg(*a);
         }
         cmd.cwd(cwd);
+        inherit_parent_env(&mut cmd);
         cmd.env("TERM", "xterm-256color");
         for (k, v) in extra_env {
             cmd.env(*k, *v);
