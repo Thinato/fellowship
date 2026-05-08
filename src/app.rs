@@ -581,35 +581,27 @@ impl App {
         }
     }
 
-    /// Periodic watchdog pass. Walks live members; for each one whose last
-    /// heartbeat is past the dead threshold, attempts a restart (up to
-    /// `max_restarts` times). Plan §3.6.
+    /// Periodic watchdog pass. Splits cleanly into a pure decision pass
+    /// (`decide_watchdog_actions`, fully unit-tested below) and the
+    /// side-effect pass that applies each decision (counter bumps, PTY
+    /// restart, escalation set).
     async fn run_watchdog(&mut self) {
         let now = crate::runtime::now_ms();
-        let members: Vec<MemberId> = self.members.members.clone();
-        for id in members {
-            if self.failed_agents.contains(&id) {
-                continue;
-            }
-            let liveness = self.agent_registry.liveness_for(&id.label(), now);
-            match liveness {
-                crate::agents::registry::Liveness::Dead => {
-                    let count = *self.restart_counts.get(&id).unwrap_or(&0);
-                    if count >= self.max_restarts {
-                        if self.failed_agents.insert(id) {
-                            error!(
-                                agent = %id.label(),
-                                restarts = count,
-                                "watchdog: agent failed after max restarts; not restarting again"
-                            );
-                        }
-                        continue;
-                    }
-                    let next = count + 1;
-                    self.restart_counts.insert(id, next);
+        let actions = decide_watchdog_actions(
+            &self.members.members,
+            &self.agent_registry,
+            &self.restart_counts,
+            &self.failed_agents,
+            self.max_restarts,
+            now,
+        );
+        for action in actions {
+            match action {
+                WatchdogAction::Restart { id, attempt } => {
+                    self.restart_counts.insert(id, attempt);
                     info!(
                         agent = %id.label(),
-                        attempt = next,
+                        attempt = attempt,
                         max = self.max_restarts,
                         "watchdog: agent dead, attempting restart"
                     );
@@ -617,11 +609,18 @@ impl App {
                         error!(agent = %id.label(), "watchdog restart failed: {e:#}");
                     }
                 }
-                crate::agents::registry::Liveness::Stale => {
+                WatchdogAction::Escalate { id, restarts } => {
+                    if self.failed_agents.insert(id) {
+                        error!(
+                            agent = %id.label(),
+                            restarts = restarts,
+                            "watchdog: agent failed after max restarts; not restarting again"
+                        );
+                    }
+                }
+                WatchdogAction::NoteStale(id) => {
                     debug!(agent = %id.label(), "watchdog: agent stale");
                 }
-                crate::agents::registry::Liveness::Live
-                | crate::agents::registry::Liveness::Unknown => {}
             }
         }
     }
@@ -661,6 +660,59 @@ impl App {
         self.terminals.insert(surface, pane);
         Ok(())
     }
+}
+
+/// One-tick output from [`decide_watchdog_actions`]. The pure decision
+/// stays separate from `App`'s mutable side effects so it can be exercised
+/// from `#[test]` without spinning up real PTYs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WatchdogAction {
+    /// Restart this member. `attempt` is the new counter value (1-based)
+    /// the side-effect pass should record.
+    Restart { id: MemberId, attempt: u32 },
+    /// Add this member to `failed_agents`. `restarts` is the count of
+    /// failed attempts that triggered escalation.
+    Escalate { id: MemberId, restarts: u32 },
+    /// Member is Stale. Used purely for the debug log; no state change.
+    NoteStale(MemberId),
+}
+
+/// Pure watchdog policy. Given the current member set and observed state,
+/// returns the actions this tick should take. Idempotent; no I/O.
+fn decide_watchdog_actions(
+    members: &[MemberId],
+    registry: &AgentRegistry,
+    restart_counts: &HashMap<MemberId, u32>,
+    failed_agents: &HashSet<MemberId>,
+    max_restarts: u32,
+    now_ms: u128,
+) -> Vec<WatchdogAction> {
+    use crate::agents::registry::Liveness;
+    let mut out = Vec::new();
+    for id in members {
+        if failed_agents.contains(id) {
+            continue;
+        }
+        match registry.liveness_for(&id.label(), now_ms) {
+            Liveness::Dead => {
+                let count = *restart_counts.get(id).unwrap_or(&0);
+                if count >= max_restarts {
+                    out.push(WatchdogAction::Escalate {
+                        id: *id,
+                        restarts: count,
+                    });
+                } else {
+                    out.push(WatchdogAction::Restart {
+                        id: *id,
+                        attempt: count + 1,
+                    });
+                }
+            }
+            Liveness::Stale => out.push(WatchdogAction::NoteStale(*id)),
+            Liveness::Live | Liveness::Unknown => {}
+        }
+    }
+    out
 }
 
 /// Parse `engineer-<n>` into a `MemberId`. Returns `None` for any other shape
@@ -734,5 +786,154 @@ mod tests {
         assert!(singleton_id_for_label("PM").is_none()); // case-sensitive
         assert!(singleton_id_for_label("").is_none());
         assert!(singleton_id_for_label("anything-else").is_none());
+    }
+
+    use crate::agents::registry::{AgentRegistry, HEARTBEAT_DEAD_SEC, HEARTBEAT_WARN_SEC};
+    use crate::runtime::HeartbeatRecord;
+
+    fn fresh_registry(records: &[(&str, u128)]) -> AgentRegistry {
+        let mut reg = AgentRegistry::new();
+        for (id, last_seen_ms) in records {
+            reg.upsert(HeartbeatRecord {
+                agent_id: (*id).to_string(),
+                last_seen_ms: *last_seen_ms,
+                status: "test".into(),
+            });
+        }
+        reg
+    }
+
+    #[test]
+    fn watchdog_no_actions_when_all_live() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - warn_ms / 2)]);
+        let actions =
+            decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &HashSet::new(), 3, now);
+        assert!(actions.is_empty(), "live member should not trigger actions");
+    }
+
+    #[test]
+    fn watchdog_emits_note_stale_for_stale_members() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - warn_ms - 1000)]);
+        let actions =
+            decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &HashSet::new(), 3, now);
+        assert_eq!(actions, vec![WatchdogAction::NoteStale(pm)]);
+    }
+
+    #[test]
+    fn watchdog_skips_unknown_no_telemetry_members() {
+        let arch = MemberId::singleton(Role::Architect);
+        // No record for architect.
+        let actions = decide_watchdog_actions(
+            &[arch],
+            &AgentRegistry::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+            3,
+            1_000_000,
+        );
+        assert!(actions.is_empty(), "Unknown liveness must be a no-op");
+    }
+
+    #[test]
+    fn watchdog_restarts_dead_member_under_cap() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - dead_ms - 1000)]);
+        let actions =
+            decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &HashSet::new(), 3, now);
+        assert_eq!(
+            actions,
+            vec![WatchdogAction::Restart { id: pm, attempt: 1 }]
+        );
+    }
+
+    #[test]
+    fn watchdog_increments_attempt_with_existing_count() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
+        let mut counts = HashMap::new();
+        counts.insert(pm, 2);
+        let actions = decide_watchdog_actions(&[pm], &reg, &counts, &HashSet::new(), 3, now);
+        assert_eq!(
+            actions,
+            vec![WatchdogAction::Restart { id: pm, attempt: 3 }]
+        );
+    }
+
+    #[test]
+    fn watchdog_escalates_at_max_restarts() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
+        let mut counts = HashMap::new();
+        counts.insert(pm, 3); // already at max
+        let actions = decide_watchdog_actions(&[pm], &reg, &counts, &HashSet::new(), 3, now);
+        assert_eq!(
+            actions,
+            vec![WatchdogAction::Escalate {
+                id: pm,
+                restarts: 3
+            }]
+        );
+    }
+
+    #[test]
+    fn watchdog_skips_already_failed_members() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
+        let mut failed = HashSet::new();
+        failed.insert(pm);
+        let actions = decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &failed, 3, now);
+        assert!(
+            actions.is_empty(),
+            "failed members must produce no further actions"
+        );
+    }
+
+    #[test]
+    fn watchdog_handles_mixed_member_set_in_one_pass() {
+        let pm = MemberId::singleton(Role::Pm);
+        let arch = MemberId::singleton(Role::Architect);
+        let recon = MemberId::singleton(Role::Recon);
+        let eng = MemberId::engineer(1);
+        let now = 1_000_000;
+        let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        // pm = live, arch = stale, recon = unknown (no record), eng = dead.
+        let reg = fresh_registry(&[
+            ("pm", now - 5_000),
+            ("architect", now - warn_ms - 5_000),
+            ("engineer-1", now - dead_ms - 5_000),
+        ]);
+        let actions = decide_watchdog_actions(
+            &[pm, arch, recon, eng],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            3,
+            now,
+        );
+        assert_eq!(
+            actions,
+            vec![
+                WatchdogAction::NoteStale(arch),
+                WatchdogAction::Restart {
+                    id: eng,
+                    attempt: 1
+                },
+            ]
+        );
     }
 }
