@@ -21,6 +21,11 @@ pub enum Event {
     /// Emitted by the runtime watcher whenever a heartbeat JSON file under
     /// `<runtime>/state/` is written. Carries the parsed record.
     AgentHeartbeat(HeartbeatRecord),
+    /// Periodic tick from `main`'s 5s watchdog interval. The handler walks
+    /// the live members, compares each one's last_seen heartbeat against
+    /// the warn/dead thresholds, and decides whether to restart, escalate,
+    /// or do nothing.
+    WatchdogTick,
     /// Emitted by the runtime watcher when a `spawn-requests/<uuid>.json`
     /// intent file is written. The watcher consumes (deletes) the file
     /// before sending so the request is processed at-most-once.

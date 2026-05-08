@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -67,6 +67,19 @@ pub struct App {
     pub max_engineers: usize,
     /// Spawn requests received while at capacity. Drained on engineer release.
     pub spawn_queue: VecDeque<SpawnRequest>,
+    /// Per-engineer worktree path, captured at spawn time so `restart_agent`
+    /// can re-spawn into the same worktree without recreating it. Singletons
+    /// don't need this (their cwd is `last_workspace_path`).
+    pub engineer_worktrees: HashMap<MemberId, PathBuf>,
+    /// Watchdog state machine — restarts taken so far per member. When this
+    /// reaches `max_restarts`, the member is added to `failed_agents` and no
+    /// further restarts are attempted (escalation banner shown in status bar).
+    pub restart_counts: HashMap<MemberId, u32>,
+    /// Members the watchdog has given up on (>= `max_restarts` restarts).
+    pub failed_agents: HashSet<MemberId>,
+    /// Max restarts per member before declaring failure (Phase 11 hardcodes
+    /// 3; Phase 10.5+ wires `Config::agents.max_restarts`).
+    pub max_restarts: u32,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
@@ -163,6 +176,10 @@ impl App {
             claude_available,
             max_engineers: 4,
             spawn_queue: VecDeque::new(),
+            engineer_worktrees: HashMap::new(),
+            restart_counts: HashMap::new(),
+            failed_agents: HashSet::new(),
+            max_restarts: 3,
             show_help: false,
             should_quit: false,
             pending_delete: None,
@@ -410,7 +427,18 @@ impl App {
             }
             Event::AgentHeartbeat(record) => {
                 debug!(agent = %record.agent_id, status = %record.status, "heartbeat");
+                // Receiving a heartbeat clears any restart count we'd been
+                // accumulating against this agent — a healthy agent should
+                // not be punished for a transient earlier silence.
+                if let Some(id) = parse_engineer_id(&record.agent_id)
+                    .or_else(|| singleton_id_for_label(&record.agent_id))
+                {
+                    self.restart_counts.remove(&id);
+                }
                 self.agent_registry.upsert(record);
+            }
+            Event::WatchdogTick => {
+                self.run_watchdog().await;
             }
             Event::SpawnRequestReceived(req) => {
                 self.handle_spawn_request(req).await;
@@ -506,6 +534,7 @@ impl App {
         )?;
         self.terminals.insert(Surface::Member(id), pane);
         self.members.add_member(id);
+        self.engineer_worktrees.insert(id, worktree_path.clone());
 
         info!(
             engineer = %id.label(),
@@ -529,6 +558,9 @@ impl App {
             pane.shutdown();
         }
         self.members.remove_member(id);
+        self.engineer_worktrees.remove(&id);
+        self.restart_counts.remove(&id);
+        self.failed_agents.remove(&id);
         info!(engineer = %id.label(), "engineer released");
 
         // Drain one queued spawn request if any (and we now have headroom).
@@ -548,6 +580,87 @@ impl App {
             let _ = t.resize(rows, cols);
         }
     }
+
+    /// Periodic watchdog pass. Walks live members; for each one whose last
+    /// heartbeat is past the dead threshold, attempts a restart (up to
+    /// `max_restarts` times). Plan §3.6.
+    async fn run_watchdog(&mut self) {
+        let now = crate::runtime::now_ms();
+        let members: Vec<MemberId> = self.members.members.clone();
+        for id in members {
+            if self.failed_agents.contains(&id) {
+                continue;
+            }
+            let liveness = self.agent_registry.liveness_for(&id.label(), now);
+            match liveness {
+                crate::agents::registry::Liveness::Dead => {
+                    let count = *self.restart_counts.get(&id).unwrap_or(&0);
+                    if count >= self.max_restarts {
+                        if self.failed_agents.insert(id) {
+                            error!(
+                                agent = %id.label(),
+                                restarts = count,
+                                "watchdog: agent failed after max restarts; not restarting again"
+                            );
+                        }
+                        continue;
+                    }
+                    let next = count + 1;
+                    self.restart_counts.insert(id, next);
+                    info!(
+                        agent = %id.label(),
+                        attempt = next,
+                        max = self.max_restarts,
+                        "watchdog: agent dead, attempting restart"
+                    );
+                    if let Err(e) = self.restart_agent(id) {
+                        error!(agent = %id.label(), "watchdog restart failed: {e:#}");
+                    }
+                }
+                crate::agents::registry::Liveness::Stale => {
+                    debug!(agent = %id.label(), "watchdog: agent stale");
+                }
+                crate::agents::registry::Liveness::Live
+                | crate::agents::registry::Liveness::Unknown => {}
+            }
+        }
+    }
+
+    /// Re-spawn `id`'s PTY in place. Singletons re-spawn at the current
+    /// workspace root; engineers re-spawn into their original worktree
+    /// (preserved across restarts). Caller is responsible for restart-count
+    /// bookkeeping; this function only does the I/O.
+    fn restart_agent(&mut self, id: MemberId) -> Result<()> {
+        let surface = Surface::Member(id);
+        if let Some(mut old) = self.terminals.remove(&surface) {
+            old.shutdown();
+        }
+        let cwd: PathBuf = match id.role {
+            Role::Engineer => self.engineer_worktrees.get(&id).cloned().ok_or_else(|| {
+                anyhow::anyhow!("no recorded worktree for engineer {}", id.label())
+            })?,
+            _ => self.last_workspace_path.clone(),
+        };
+        let prompt_path = crate::agents::spawn::prompt_path_for(&self.prompts_root, id.role);
+        let action = crate::agents::spawn::plan_for(
+            id.role,
+            &id.label(),
+            self.claude_available,
+            &prompt_path,
+        );
+        let base_env = vec![("PATH".to_string(), self.agent_path.clone())];
+        let (rows, cols) = self.last_term_size;
+        let pane = crate::agents::spawn::execute(
+            &action,
+            rows,
+            cols,
+            &cwd,
+            self.event_tx.clone(),
+            &base_env,
+        )?;
+        self.terminals.insert(surface, pane);
+        Ok(())
+    }
 }
 
 /// Parse `engineer-<n>` into a `MemberId`. Returns `None` for any other shape
@@ -555,6 +668,21 @@ impl App {
 fn parse_engineer_id(s: &str) -> Option<MemberId> {
     let n: u32 = s.strip_prefix("engineer-")?.parse().ok()?;
     Some(MemberId::engineer(n))
+}
+
+/// Parse a singleton label (`pm`, `orchestrator`, `architect`, `recon`) into
+/// its canonical `MemberId`. Counterpart to `parse_engineer_id` so both
+/// shapes can be resolved when looking up by string id (e.g. heartbeat
+/// records that arrive identified by `agent_id` strings).
+fn singleton_id_for_label(label: &str) -> Option<MemberId> {
+    let role = match label {
+        "pm" => Role::Pm,
+        "orchestrator" => Role::Orchestrator,
+        "architect" => Role::Architect,
+        "recon" => Role::Recon,
+        _ => return None,
+    };
+    Some(MemberId::singleton(role))
 }
 
 #[cfg(test)]
@@ -578,5 +706,33 @@ mod tests {
         assert!(parse_engineer_id("engineer-x").is_none());
         assert!(parse_engineer_id("engineer").is_none());
         assert!(parse_engineer_id("").is_none());
+    }
+
+    #[test]
+    fn singleton_id_for_label_recognizes_canonical_names() {
+        assert_eq!(
+            singleton_id_for_label("pm"),
+            Some(MemberId::singleton(Role::Pm))
+        );
+        assert_eq!(
+            singleton_id_for_label("orchestrator"),
+            Some(MemberId::singleton(Role::Orchestrator))
+        );
+        assert_eq!(
+            singleton_id_for_label("architect"),
+            Some(MemberId::singleton(Role::Architect))
+        );
+        assert_eq!(
+            singleton_id_for_label("recon"),
+            Some(MemberId::singleton(Role::Recon))
+        );
+    }
+
+    #[test]
+    fn singleton_id_for_label_rejects_non_singletons_and_garbage() {
+        assert!(singleton_id_for_label("engineer-1").is_none());
+        assert!(singleton_id_for_label("PM").is_none()); // case-sensitive
+        assert!(singleton_id_for_label("").is_none());
+        assert!(singleton_id_for_label("anything-else").is_none());
     }
 }

@@ -189,6 +189,20 @@ async fn run(
         }
     });
 
+    // Background watchdog tick every 5 seconds. The handler walks the live
+    // members and decides whether to restart based on heartbeat age. Plan
+    // §3.6 specifies this cadence and the warn/dead thresholds.
+    let watchdog_tx = event_tx.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(5));
+        loop {
+            interval.tick().await;
+            if watchdog_tx.send(Event::WatchdogTick).is_err() {
+                break;
+            }
+        }
+    });
+
     // Background beads poll every 3 seconds. `bd` errors (e.g. not initialized
     // in the repo, binary missing) are logged once-per-failure-type and the
     // tick continues so a later `bd init` recovers without restarting.

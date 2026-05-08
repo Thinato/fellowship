@@ -9,6 +9,28 @@ use anyhow::Result;
 
 use crate::runtime::HeartbeatRecord;
 
+/// Default heartbeat-age thresholds (Phase 11 hardcodes; Phase 10.5+ wires
+/// from `Config::agents.heartbeat_*_sec`). Plan §3.6 specifies these values.
+pub const HEARTBEAT_WARN_SEC: u64 = 60;
+pub const HEARTBEAT_DEAD_SEC: u64 = 180;
+
+/// Liveness derived from the most recent heartbeat for an agent id. Computed
+/// per `liveness_for` call from `last_seen_ms` against the thresholds above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// At least one heartbeat in the last `HEARTBEAT_WARN_SEC`.
+    Live,
+    /// Last heartbeat is older than `HEARTBEAT_WARN_SEC` but within
+    /// `HEARTBEAT_DEAD_SEC`. Watchdog warns; no restart yet.
+    Stale,
+    /// Last heartbeat older than `HEARTBEAT_DEAD_SEC`. Watchdog restarts.
+    Dead,
+    /// No heartbeat record at all. Common at boot for placeholder/banner
+    /// PTYs that don't write heartbeats; the watchdog treats this as
+    /// "no telemetry — leave alone" rather than an alarm.
+    Unknown,
+}
+
 #[derive(Debug, Default)]
 pub struct AgentRegistry {
     records: HashMap<String, HeartbeatRecord>,
@@ -25,6 +47,23 @@ impl AgentRegistry {
 
     pub fn get(&self, agent_id: &str) -> Option<&HeartbeatRecord> {
         self.records.get(agent_id)
+    }
+
+    /// Derive `Liveness` for an agent given the current wall-clock time in
+    /// epoch milliseconds. `now_ms` is supplied by the caller so tests can
+    /// drive deterministic state transitions without waiting in real time.
+    pub fn liveness_for(&self, agent_id: &str, now_ms: u128) -> Liveness {
+        let Some(rec) = self.records.get(agent_id) else {
+            return Liveness::Unknown;
+        };
+        let elapsed_sec = now_ms.saturating_sub(rec.last_seen_ms) / 1000;
+        if elapsed_sec >= HEARTBEAT_DEAD_SEC as u128 {
+            Liveness::Dead
+        } else if elapsed_sec >= HEARTBEAT_WARN_SEC as u128 {
+            Liveness::Stale
+        } else {
+            Liveness::Live
+        }
     }
 
     /// Scan a state directory once and ingest every `*.json` file. Used at
@@ -109,5 +148,37 @@ mod tests {
         let mut reg = AgentRegistry::new();
         let n = reg.load_from_state_dir(&tmp.path().join("nope")).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn liveness_for_unknown_when_no_record() {
+        let reg = AgentRegistry::new();
+        assert_eq!(reg.liveness_for("ghost", 0), Liveness::Unknown);
+    }
+
+    #[test]
+    fn liveness_for_live_when_within_warn_threshold() {
+        let mut reg = AgentRegistry::new();
+        // last_seen at 1_000_000 ms; now at 1_000_000 + 30_000 (30s elapsed).
+        reg.upsert(record("pm", "alive", 1_000_000));
+        assert_eq!(reg.liveness_for("pm", 1_030_000), Liveness::Live);
+    }
+
+    #[test]
+    fn liveness_for_stale_at_warn_threshold() {
+        let mut reg = AgentRegistry::new();
+        reg.upsert(record("pm", "alive", 0));
+        let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
+        assert_eq!(reg.liveness_for("pm", warn_ms), Liveness::Stale);
+    }
+
+    #[test]
+    fn liveness_for_dead_at_dead_threshold() {
+        let mut reg = AgentRegistry::new();
+        reg.upsert(record("pm", "alive", 0));
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        assert_eq!(reg.liveness_for("pm", dead_ms), Liveness::Dead);
+        // Long past dead threshold also still Dead.
+        assert_eq!(reg.liveness_for("pm", dead_ms * 10), Liveness::Dead);
     }
 }

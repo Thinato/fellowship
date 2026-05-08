@@ -310,4 +310,30 @@ Implementation log for the agentic UI overhaul. One entry per phase per attempt.
 
 ---
 
+## Phase 11 — Watchdog (STALE / DEAD / FAILED + auto-restart)
+
+- **Started:** 2026-05-08
+- **Branch:** feat/agentic-ui
+- **Status:** done
+- **Acceptance evidence:**
+  - **Liveness state machine.** `src/agents/registry.rs` adds `Liveness { Live, Stale, Dead, Unknown }` plus the plan §3.6 thresholds (`HEARTBEAT_WARN_SEC = 60`, `HEARTBEAT_DEAD_SEC = 180`). `AgentRegistry::liveness_for(agent_id, now_ms)` derives the state from the most-recent heartbeat record. `Unknown` is the no-record case (placeholder PTYs, fresh boot before first heartbeat) — explicitly distinct from `Stale` so the watchdog leaves no-telemetry members alone instead of restart-looping them.
+  - **Watchdog tick.** `main::run` now spawns a 5s tokio interval that emits `Event::WatchdogTick`. `App::run_watchdog` walks `members.members`, computes liveness per id, and acts:
+    - `Live` / `Unknown` / `Stale` — no-op (Stale logs a `debug!`).
+    - `Dead` with `restart_counts < max_restarts` — increments the counter, calls `restart_agent`, logs `info!`.
+    - `Dead` with `restart_counts >= max_restarts` — adds to `failed_agents`, logs `error!`. No further restarts.
+  - **Restart logic.** `App::restart_agent(id)` shuts down the old PTY, picks the right cwd (engineer's recorded worktree for `Role::Engineer`, `last_workspace_path` for singletons), re-runs the same `agents::spawn::plan_for + execute` path so the role prompt and shim PATH are preserved across restarts.
+  - **Heartbeat recovery.** `Event::AgentHeartbeat` now also clears `restart_counts.remove(&id)` so a healthy agent that catches up isn't punished for a transient earlier silence. `singleton_id_for_label` resolves `pm` / `orchestrator` / `architect` / `recon` strings to their `MemberId`; `parse_engineer_id` handles `engineer-<n>` (already from Phase 9). Both are tried.
+  - **Engineer worktree memory.** New `App.engineer_worktrees: HashMap<MemberId, PathBuf>` populated in `spawn_engineer` and cleared on `release-engineer`. `restart_agent` reads it so engineers come back in their original worktree (worktrees are not recreated on restart).
+  - **Status-bar escalation banner.** When `failed_agents` is non-empty, the status bar appends a red `[!] watchdog failed: <ids>` span. Persistent until the user releases the failed agent.
+  - **Members pane liveness badges.** `MembersPane::render` takes `now_ms` and `&HashSet<MemberId>` (the failed set); each row appends `[WORK]` (green) / `[STALE]` (yellow) / `[DEAD]` (red) / nothing (Unknown) — and forces `[DEAD]` red if the watchdog has given up regardless of latest heartbeat age.
+  - **Cargo gate green: 148 tests total** — 141 lib (was 135; +6 = 4 liveness threshold tests + 2 singleton_id_for_label) + 7 fellowship-ctl bin + 0 integration.
+- **Notes:**
+  - **Hardcoded constants** (`HEARTBEAT_WARN_SEC=60`, `HEARTBEAT_DEAD_SEC=180`, `max_restarts=3`, watchdog tick=5s) match plan §3.6 defaults. Phase 10.5+ wires them from `Config::agents`.
+  - **Restart preserves the role prompt** because `restart_agent` calls `agents::spawn::plan_for(...)` again — the role markdown is `include_str!`'d so any in-flight changes to `agents/<role>.md` only take effect on full fellowship restart, not per-PTY restart.
+  - **`Unknown` liveness is intentional** — fellowship boots and immediately the watchdog sees members that haven't heartbeat yet. Treating Unknown as a no-op means we don't restart-storm at boot. Once a member produces its first heartbeat, the clock starts.
+  - **`Stale` does not yet emit a warning bead.** Plan §3.6 envisions a watchdog-authored bead `[fellowship-watchdog] agent <id> stale` consumed by the Orchestrator. That arrives in a Phase 12 follow-up — Phase 11 acceptance only requires the badge + restart loop, which is in place.
+  - **The user's PTY can fall through to plain shell** after claude exits (Phase 10's `; exec ${SHELL:-/bin/bash} -li`). When that happens, the heartbeat clock keeps ticking against the agent_id (no heartbeats from a plain shell). Watchdog will mark Dead at 180s and restart the PTY, replacing the user's shell with claude. This is intentional for autonomous operation; a future config flag could opt-out for interactive debugging.
+
+---
+
 <!-- New phase entries appended below. Do not delete past entries; append per attempt. -->

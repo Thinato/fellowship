@@ -78,8 +78,15 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, name: &str) {
 
 fn render_members_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Members;
-    app.members
-        .render(frame, area, focused, &app.agent_registry);
+    let now_ms = crate::runtime::now_ms();
+    app.members.render(
+        frame,
+        area,
+        focused,
+        &app.agent_registry,
+        now_ms,
+        &app.failed_agents,
+    );
 }
 
 fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -166,6 +173,20 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             "  [PREFIX]",
             Style::default()
                 .fg(theme::PREFIX_INDICATOR)
+                .bg(theme::STATUS_BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Escalation banner — when the watchdog has given up on one or more
+    // members (>= max_restarts restart attempts failed) the user is informed
+    // here. Plan §3.6 calls for a "persistent banner".
+    if !app.failed_agents.is_empty() {
+        let names: Vec<String> = app.failed_agents.iter().map(|m| m.label()).collect();
+        spans.push(Span::styled(
+            format!("  [!] watchdog failed: {}", names.join(", ")),
+            Style::default()
+                .fg(ratatui::style::Color::Red)
                 .bg(theme::STATUS_BG)
                 .add_modifier(Modifier::BOLD),
         ));

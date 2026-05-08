@@ -7,7 +7,9 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-use crate::agents::registry::AgentRegistry;
+use std::collections::HashSet;
+
+use crate::agents::registry::{AgentRegistry, Liveness};
 use crate::event::Event;
 use crate::surface::{MemberId, Role, Surface};
 
@@ -127,6 +129,8 @@ impl MembersPane {
         area: Rect,
         focused: bool,
         registry: &AgentRegistry,
+        now_ms: u128,
+        failed_agents: &HashSet<MemberId>,
     ) {
         let border_color = if focused {
             Color::Cyan
@@ -159,15 +163,37 @@ impl MembersPane {
                     .get(&id.label())
                     .map(|r| format!(" — {}", r.status))
                     .unwrap_or_default();
-                let label = format!("{}{}{}", marker, id.label(), status_suffix);
-                let style = if is_active {
+                let label_text = format!("{}{}{}", marker, id.label(), status_suffix);
+                let label_style = if is_active {
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 };
-                ListItem::new(Line::from(Span::styled(label, style)))
+
+                // Liveness badge — derived from the registry's heartbeat age
+                // unless the watchdog has given up (failed_agents).
+                let (badge_text, badge_color) = if failed_agents.contains(id) {
+                    (" [DEAD]", Color::Red)
+                } else {
+                    match registry.liveness_for(&id.label(), now_ms) {
+                        Liveness::Live => (" [WORK]", Color::Green),
+                        Liveness::Stale => (" [STALE]", Color::Yellow),
+                        Liveness::Dead => (" [DEAD]", Color::Red),
+                        Liveness::Unknown => ("", Color::Reset),
+                    }
+                };
+                let mut spans = vec![Span::styled(label_text, label_style)];
+                if !badge_text.is_empty() {
+                    spans.push(Span::styled(
+                        badge_text.to_string(),
+                        Style::default()
+                            .fg(badge_color)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                ListItem::new(Line::from(spans))
             })
             .collect();
 
