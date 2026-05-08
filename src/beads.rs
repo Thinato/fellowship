@@ -100,6 +100,52 @@ pub async fn list_beads() -> Result<Vec<Bead>> {
     list_beads_with("bd").await
 }
 
+/// Run `bd create --silent --title=… --description=… [--labels=…]` and return
+/// the new bead id. Used by the watchdog to author `[fellowship-watchdog]`
+/// beads on Stale transitions. `bd_path` is injectable for tests.
+pub async fn create_bead_with(
+    bd_path: &str,
+    title: &str,
+    description: &str,
+    labels: &[&str],
+) -> Result<String> {
+    let mut args: Vec<String> = vec![
+        "create".to_string(),
+        "--silent".to_string(),
+        "--title".to_string(),
+        title.to_string(),
+        "--description".to_string(),
+        description.to_string(),
+        "--type".to_string(),
+        "task".to_string(),
+    ];
+    if !labels.is_empty() {
+        args.push("--labels".to_string());
+        args.push(labels.join(","));
+    }
+    let out = Command::new(bd_path)
+        .args(&args)
+        .output()
+        .await
+        .with_context(|| format!("invoking `{} create`", bd_path))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "{} create failed: {}",
+            bd_path,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if id.is_empty() {
+        anyhow::bail!("`{} create --silent` returned empty stdout", bd_path);
+    }
+    Ok(id)
+}
+
+pub async fn create_bead(title: &str, description: &str, labels: &[&str]) -> Result<String> {
+    create_bead_with("bd", title, description, labels).await
+}
+
 fn parse_bd_list(stdout: &[u8]) -> Result<Vec<Bead>> {
     if stdout.iter().all(u8::is_ascii_whitespace) {
         return Ok(Vec::new());
@@ -197,6 +243,61 @@ mod tests {
         assert_eq!(beads.len(), 1);
         assert_eq!(beads[0].id, "bd-7");
         assert_eq!(beads[0].labels, vec!["role:engineer".to_string()]);
+    }
+
+    fn write_capturing_bd(dir: &std::path::Path) -> std::path::PathBuf {
+        // Echoes a fake id and writes its argv to a sidecar file so the test
+        // can assert the exact arguments without a full bd install.
+        let path = dir.join("bd");
+        let argv_log = dir.join("argv.txt");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nfor arg in \"$@\"; do printf '%s\\n' \"$arg\"; done > '{}'\necho 'bd-fake-1'\n",
+                argv_log.display()
+            ),
+        )
+        .unwrap();
+        let mut perm = std::fs::metadata(&path).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&path, perm).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn create_bead_with_returns_id_and_passes_args() {
+        let tmp = TempDir::new().unwrap();
+        let bd = write_capturing_bd(tmp.path());
+        let id = create_bead_with(
+            bd.to_str().unwrap(),
+            "the title",
+            "the body",
+            &["fellowship-watchdog", "phase-12"],
+        )
+        .await
+        .unwrap();
+        assert_eq!(id, "bd-fake-1");
+        let argv = std::fs::read_to_string(tmp.path().join("argv.txt")).unwrap();
+        let lines: Vec<&str> = argv.lines().collect();
+        assert!(lines.contains(&"create"), "argv was: {argv}");
+        assert!(lines.contains(&"--silent"), "argv was: {argv}");
+        assert!(lines.contains(&"the title"), "argv was: {argv}");
+        assert!(lines.contains(&"the body"), "argv was: {argv}");
+        assert!(
+            lines.contains(&"fellowship-watchdog,phase-12"),
+            "argv was: {argv}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_bead_with_propagates_failure() {
+        let tmp = TempDir::new().unwrap();
+        let bd = write_failing_bd(tmp.path());
+        let err = create_bead_with(bd.to_str().unwrap(), "t", "d", &[])
+            .await
+            .expect_err("non-zero exit should surface");
+        let msg = format!("{:#}", err);
+        assert!(msg.contains("boom"), "stderr should propagate: {msg}");
     }
 
     #[tokio::test]

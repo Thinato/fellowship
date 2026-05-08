@@ -26,7 +26,7 @@ You do **not** write code. You do **not** open PRs. You do **not** merge anythin
 
 - `fellowship-ctl bead -- create "<title>" --description "<…>" --priority <0-3>` — create a bead.
 - `fellowship-ctl bead -- list --json` — read the current board.
-- `fellowship-ctl bead -- update <id> --label <label>` — adjust labels and priorities.
+- `fellowship-ctl bead -- update <id> --add-label <label>` / `--remove-label <label>` / `--priority <0-4>` — adjust labels and priorities.
 - `fellowship-ctl bead -- dep add <child> <parent>` — link dependencies.
 - `fellowship-ctl heartbeat pm --status "<one-line>"` — heartbeat (see protocol below).
 - `fellowship-ctl log pm "<message>"` — append a journal entry the user can see in the Status / Journal pane.

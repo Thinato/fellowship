@@ -77,6 +77,12 @@ pub struct App {
     pub restart_counts: HashMap<MemberId, u32>,
     /// Members the watchdog has given up on (>= `max_restarts` restarts).
     pub failed_agents: HashSet<MemberId>,
+    /// Members the watchdog has already authored a `[fellowship-watchdog]
+    /// agent <id> stale` bead for in the current stale window. Cleared when
+    /// the member transitions out of `Liveness::Stale` (recovers, restarts,
+    /// or escalates to `failed_agents`) so the next stale period gets a fresh
+    /// warning bead. Plan §3.6.
+    pub stale_warned: HashSet<MemberId>,
     /// Max restarts per member before declaring failure (Phase 11 hardcodes
     /// 3; Phase 10.5+ wires `Config::agents.max_restarts`).
     pub max_restarts: u32,
@@ -179,6 +185,7 @@ impl App {
             engineer_worktrees: HashMap::new(),
             restart_counts: HashMap::new(),
             failed_agents: HashSet::new(),
+            stale_warned: HashSet::new(),
             max_restarts: 3,
             show_help: false,
             should_quit: false,
@@ -434,6 +441,7 @@ impl App {
                     .or_else(|| singleton_id_for_label(&record.agent_id))
                 {
                     self.restart_counts.remove(&id);
+                    self.stale_warned.remove(&id);
                 }
                 self.agent_registry.upsert(record);
             }
@@ -592,6 +600,7 @@ impl App {
             &self.agent_registry,
             &self.restart_counts,
             &self.failed_agents,
+            &self.stale_warned,
             self.max_restarts,
             now,
         );
@@ -620,6 +629,40 @@ impl App {
                 }
                 WatchdogAction::NoteStale(id) => {
                     debug!(agent = %id.label(), "watchdog: agent stale");
+                }
+                WatchdogAction::WarnStale(id) => {
+                    self.stale_warned.insert(id);
+                    info!(agent = %id.label(), "watchdog: authoring stale-warn bead");
+                    let label = id.label();
+                    let title = format!("[fellowship-watchdog] agent {} stale", label);
+                    let description = format!(
+                        "Agent `{}` has not produced a heartbeat in over {}s. \
+                         Watchdog will auto-restart at {}s. Orchestrator may \
+                         intervene (reassign work, surface to user) before then.",
+                        label,
+                        crate::agents::registry::HEARTBEAT_WARN_SEC,
+                        crate::agents::registry::HEARTBEAT_DEAD_SEC,
+                    );
+                    // Fire-and-forget: don't block the watchdog tick on bd I/O.
+                    tokio::spawn(async move {
+                        match crate::beads::create_bead(
+                            &title,
+                            &description,
+                            &["fellowship-watchdog", "agent-stale"],
+                        )
+                        .await
+                        {
+                            Ok(bead_id) => {
+                                info!(agent = %label, bead = %bead_id, "stale-warn bead created")
+                            }
+                            Err(e) => {
+                                error!(agent = %label, "stale-warn bead create failed: {e:#}")
+                            }
+                        }
+                    });
+                }
+                WatchdogAction::ClearStale(id) => {
+                    self.stale_warned.remove(&id);
                 }
             }
         }
@@ -679,6 +722,15 @@ enum WatchdogAction {
     Escalate { id: MemberId, restarts: u32 },
     /// Member is Stale. Used purely for the debug log; no state change.
     NoteStale(MemberId),
+    /// Author a `[fellowship-watchdog] agent <id> stale` bead and add `id`
+    /// to `stale_warned`. Emitted on the first tick a member enters Stale
+    /// in the current stale window.
+    WarnStale(MemberId),
+    /// Drop `id` from `stale_warned`. Emitted when a previously-warned
+    /// member transitions out of Stale (recovered to Live, escalated to
+    /// Dead/Restart, or watchdog has given up). The next stale window will
+    /// re-warn.
+    ClearStale(MemberId),
 }
 
 /// Pure watchdog policy. Given the current member set and observed state,
@@ -688,6 +740,7 @@ fn decide_watchdog_actions(
     registry: &AgentRegistry,
     restart_counts: &HashMap<MemberId, u32>,
     failed_agents: &HashSet<MemberId>,
+    stale_warned: &HashSet<MemberId>,
     max_restarts: u32,
     now_ms: u128,
 ) -> Vec<WatchdogAction> {
@@ -699,6 +752,9 @@ fn decide_watchdog_actions(
         }
         match registry.liveness_for(&id.label(), now_ms) {
             Liveness::Dead => {
+                if stale_warned.contains(id) {
+                    out.push(WatchdogAction::ClearStale(*id));
+                }
                 let count = *restart_counts.get(id).unwrap_or(&0);
                 if count >= max_restarts {
                     out.push(WatchdogAction::Escalate {
@@ -712,8 +768,17 @@ fn decide_watchdog_actions(
                     });
                 }
             }
-            Liveness::Stale => out.push(WatchdogAction::NoteStale(*id)),
-            Liveness::Live | Liveness::Unknown => {}
+            Liveness::Stale => {
+                out.push(WatchdogAction::NoteStale(*id));
+                if !stale_warned.contains(id) {
+                    out.push(WatchdogAction::WarnStale(*id));
+                }
+            }
+            Liveness::Live | Liveness::Unknown => {
+                if stale_warned.contains(id) {
+                    out.push(WatchdogAction::ClearStale(*id));
+                }
+            }
         }
     }
     out
@@ -813,8 +878,15 @@ mod tests {
         let now = 1_000_000;
         let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
         let reg = fresh_registry(&[("pm", now - warn_ms / 2)]);
-        let actions =
-            decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &HashSet::new(), 3, now);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            3,
+            now,
+        );
         assert!(actions.is_empty(), "live member should not trigger actions");
     }
 
@@ -824,9 +896,22 @@ mod tests {
         let now = 1_000_000;
         let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
         let reg = fresh_registry(&[("pm", now - warn_ms - 1000)]);
-        let actions =
-            decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &HashSet::new(), 3, now);
-        assert_eq!(actions, vec![WatchdogAction::NoteStale(pm)]);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            3,
+            now,
+        );
+        // First-tick Stale emits both NoteStale (debug log) and WarnStale
+        // (bead authoring). See `watchdog_warns_stale_once_per_window` for
+        // the once-per-window assertion.
+        assert_eq!(
+            actions,
+            vec![WatchdogAction::NoteStale(pm), WatchdogAction::WarnStale(pm),]
+        );
     }
 
     #[test]
@@ -837,6 +922,7 @@ mod tests {
             &[arch],
             &AgentRegistry::new(),
             &HashMap::new(),
+            &HashSet::new(),
             &HashSet::new(),
             3,
             1_000_000,
@@ -850,8 +936,15 @@ mod tests {
         let now = 1_000_000;
         let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
         let reg = fresh_registry(&[("pm", now - dead_ms - 1000)]);
-        let actions =
-            decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &HashSet::new(), 3, now);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &HashSet::new(),
+            3,
+            now,
+        );
         assert_eq!(
             actions,
             vec![WatchdogAction::Restart { id: pm, attempt: 1 }]
@@ -866,7 +959,15 @@ mod tests {
         let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
         let mut counts = HashMap::new();
         counts.insert(pm, 2);
-        let actions = decide_watchdog_actions(&[pm], &reg, &counts, &HashSet::new(), 3, now);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &counts,
+            &HashSet::new(),
+            &HashSet::new(),
+            3,
+            now,
+        );
         assert_eq!(
             actions,
             vec![WatchdogAction::Restart { id: pm, attempt: 3 }]
@@ -881,7 +982,15 @@ mod tests {
         let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
         let mut counts = HashMap::new();
         counts.insert(pm, 3); // already at max
-        let actions = decide_watchdog_actions(&[pm], &reg, &counts, &HashSet::new(), 3, now);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &counts,
+            &HashSet::new(),
+            &HashSet::new(),
+            3,
+            now,
+        );
         assert_eq!(
             actions,
             vec![WatchdogAction::Escalate {
@@ -899,11 +1008,127 @@ mod tests {
         let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
         let mut failed = HashSet::new();
         failed.insert(pm);
-        let actions = decide_watchdog_actions(&[pm], &reg, &HashMap::new(), &failed, 3, now);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &failed,
+            &HashSet::new(),
+            3,
+            now,
+        );
         assert!(
             actions.is_empty(),
             "failed members must produce no further actions"
         );
+    }
+
+    #[test]
+    fn watchdog_warns_stale_once_per_window() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let warn_ms = (HEARTBEAT_WARN_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - warn_ms - 1_000)]);
+
+        // First tick — id not yet in stale_warned → both NoteStale + WarnStale.
+        let stale_warned: HashSet<MemberId> = HashSet::new();
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &stale_warned,
+            3,
+            now,
+        );
+        assert_eq!(
+            actions,
+            vec![WatchdogAction::NoteStale(pm), WatchdogAction::WarnStale(pm),]
+        );
+
+        // Second tick — caller has applied the previous WarnStale to the set.
+        let mut warned = HashSet::new();
+        warned.insert(pm);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &warned,
+            3,
+            now + 5_000,
+        );
+        assert_eq!(
+            actions,
+            vec![WatchdogAction::NoteStale(pm)],
+            "already-warned member must NOT re-emit WarnStale"
+        );
+    }
+
+    #[test]
+    fn watchdog_clears_stale_warned_on_recovery_to_live() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        // Heartbeat 5s ago → Live.
+        let reg = fresh_registry(&[("pm", now - 5_000)]);
+        let mut warned = HashSet::new();
+        warned.insert(pm);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &warned,
+            3,
+            now,
+        );
+        assert_eq!(actions, vec![WatchdogAction::ClearStale(pm)]);
+    }
+
+    #[test]
+    fn watchdog_clears_stale_warned_when_progressing_to_dead() {
+        let pm = MemberId::singleton(Role::Pm);
+        let now = 1_000_000;
+        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
+        let reg = fresh_registry(&[("pm", now - dead_ms - 1_000)]);
+        let mut warned = HashSet::new();
+        warned.insert(pm);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &reg,
+            &HashMap::new(),
+            &HashSet::new(),
+            &warned,
+            3,
+            now,
+        );
+        assert_eq!(
+            actions,
+            vec![
+                WatchdogAction::ClearStale(pm),
+                WatchdogAction::Restart { id: pm, attempt: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn watchdog_clears_stale_warned_on_unknown_after_restart() {
+        // After restart_agent clears the registry record, liveness becomes
+        // Unknown. If the member was previously warned, the next tick should
+        // clear stale_warned so the next stale window gets a fresh bead.
+        let pm = MemberId::singleton(Role::Pm);
+        let mut warned = HashSet::new();
+        warned.insert(pm);
+        let actions = decide_watchdog_actions(
+            &[pm],
+            &AgentRegistry::new(), // no record → Unknown
+            &HashMap::new(),
+            &HashSet::new(),
+            &warned,
+            3,
+            1_000_000,
+        );
+        assert_eq!(actions, vec![WatchdogAction::ClearStale(pm)]);
     }
 
     #[test]
@@ -926,6 +1151,7 @@ mod tests {
             &reg,
             &HashMap::new(),
             &HashSet::new(),
+            &HashSet::new(),
             3,
             now,
         );
@@ -933,6 +1159,7 @@ mod tests {
             actions,
             vec![
                 WatchdogAction::NoteStale(arch),
+                WatchdogAction::WarnStale(arch),
                 WatchdogAction::Restart {
                     id: eng,
                     attempt: 1
