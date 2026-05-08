@@ -90,22 +90,29 @@ bead is visible in the OPEN column.
 
 ---
 
-## Segment 2 — Orchestrator routes (≈ 30s)
+## Segment 2 — Native Orchestrator routes (≈ 5–15s)
 
-Switch to the Orchestrator member: `Ctrl+a m`, then `j` once, then `Enter`.
+Phase 12 replaced the LLM Orchestrator with a deterministic native loop in
+`src/agents/orchestrator.rs`. There is no Orchestrator member surface to
+focus — the loop runs as a tokio task in fellowship's process.
 
-The Orchestrator polls every ~30s. On the next iteration it should:
-- See the new `role:engineer` open bead.
-- Run `fellowship-ctl spawn-engineer --branch feat/bead-<id>`.
-- Log `"spawned engineer-1 for bead-<id>"`.
+The loop polls `bd list --json` every 5s. Within one tick of the PM's bead
+landing on the board it should:
+- Pick up the new `role:engineer` open bead.
+- Write a `SpawnRequest` to `~/.fellowship/runtime/<session>/spawn-requests/`
+  with `branch: feat/bead-<id>`.
+- Fellowship's runtime watcher consumes the request and spawns
+  `engineer-1` PTY into a fresh worktree.
 
 **Verify in fellowship:**
-- Members pane gains `engineer-1` row with `[WORK]` badge.
+- Members pane gains `engineer-1` row with `[WORK]` badge within ~10s.
 - Workspaces pane gains a new `feat/bead-<id>` worktree.
+- (Optional) `tail -F ~/.fellowship/runtime/<session>/fellowship.log` shows
+  `orchestrator: spawn-request enqueued bead=<id>`.
 
-If the Orchestrator hasn't routed within 90s, manually nudge by typing into
-its terminal: `Run your operational loop now.` (This is allowed by the role
-prompt §"override or query".)
+If no engineer appears within 60s, the orchestrator likely couldn't read
+`bd list --json` (e.g. bd not initialized in the repo). Check
+`fellowship.log` for `orchestrator: bd list failed` and abort the recording.
 
 ---
 

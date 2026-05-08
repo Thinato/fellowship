@@ -129,7 +129,10 @@ impl App {
         // surface from the Members pane has something to display. The banner
         // command runs once and `exec bash` keeps the shell alive afterward.
         // Phase 10 replaces the banner with the real `claude` invocation.
-        for role in [Role::Pm, Role::Orchestrator, Role::Architect, Role::Recon] {
+        // Phase 12: Orchestrator was removed from the LLM PTY pool.
+        // Orchestration runs as a native tokio task in `agents::orchestrator`
+        // (deterministic, no token cost, no scheduler-wakeup problem).
+        for role in [Role::Pm, Role::Architect, Role::Recon] {
             let id = MemberId::singleton(role);
             let prompt_path = crate::agents::spawn::prompt_path_for(&prompts_root, role);
             let action =

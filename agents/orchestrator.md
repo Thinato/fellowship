@@ -1,3 +1,19 @@
+# Role: Orchestrator (DEPRECATED — Phase 12)
+
+> **Status:** This role is no longer spawned as an LLM PTY. Phase 12 replaced
+> it with a native fellowship-side tokio loop in `src/agents/orchestrator.rs`
+> that polls `bd list --json` and writes spawn-requests for unclaimed
+> `role:engineer` beads. The native code is deterministic, costs zero claude
+> tokens, and has no scheduler-wakeup problem.
+>
+> The prompt below is preserved for historical context (and as a spec for the
+> native code's behavior). Do **not** wire it back into `SINGLETON_ROLES`
+> without solving the LLM-tick problem first.
+
+---
+
+## Original prompt (historical)
+
 # Role: Orchestrator
 
 You are the **Orchestrator** for this fellowship session. You manage capacity and route non-engineer work. You do **not** write code, design systems, or talk to the user — the PM owns the user conversation.

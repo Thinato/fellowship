@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub const STATE_DIR: &str = "state";
 pub const SPAWN_REQUEST_DIR: &str = "spawn-requests";
@@ -134,6 +135,29 @@ pub fn ensure_subdir(root: &Path, name: &str) -> Result<PathBuf> {
     let p = root.join(name);
     fs::create_dir_all(&p).with_context(|| format!("mkdir -p {}", p.display()))?;
     Ok(p)
+}
+
+/// Write a `SpawnRequest` JSON file under `<root>/spawn-requests/<uuid>.json`.
+/// Returns `(path, request_id)`. Used by both `fellowship-ctl spawn-engineer`
+/// and the native fellowship-side Orchestrator (Phase 12) to enqueue
+/// engineer spawns; fellowship's runtime watcher consumes the file.
+pub fn write_spawn_request(
+    root: &Path,
+    branch: Option<String>,
+    single_shot: bool,
+) -> Result<(PathBuf, String)> {
+    let dir = ensure_subdir(root, SPAWN_REQUEST_DIR)?;
+    let request_id = Uuid::new_v4().to_string();
+    let path = dir.join(format!("{}.json", request_id));
+    let req = SpawnRequest {
+        request_id: request_id.clone(),
+        branch,
+        single_shot,
+        requested_at_ms: now_ms(),
+    };
+    let json = serde_json::to_vec_pretty(&req)?;
+    fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
+    Ok((path, request_id))
 }
 
 pub fn journal_path(root: &Path) -> PathBuf {

@@ -16,8 +16,8 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
 use fellowship::runtime::{
-    HeartbeatRecord, JOURNAL_FILE, JournalEntry, RELEASE_REQUEST_DIR, ReleaseRequest,
-    SPAWN_REQUEST_DIR, STATE_DIR, SpawnRequest, ensure_subdir, now_ms, runtime_dir,
+    HeartbeatRecord, JOURNAL_FILE, JournalEntry, RELEASE_REQUEST_DIR, ReleaseRequest, STATE_DIR,
+    ensure_subdir, now_ms, runtime_dir,
 };
 
 #[derive(Parser, Debug)]
@@ -111,24 +111,9 @@ fn append_journal(root: &Path, agent_id: &str, message: &str) -> Result<PathBuf>
     Ok(path)
 }
 
-fn write_spawn_request(
-    root: &Path,
-    branch: Option<String>,
-    single_shot: bool,
-) -> Result<(PathBuf, String)> {
-    let dir = ensure_subdir(root, SPAWN_REQUEST_DIR)?;
-    let request_id = Uuid::new_v4().to_string();
-    let path = dir.join(format!("{}.json", request_id));
-    let req = SpawnRequest {
-        request_id: request_id.clone(),
-        branch,
-        single_shot,
-        requested_at_ms: now_ms(),
-    };
-    let json = serde_json::to_vec_pretty(&req)?;
-    fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
-    Ok((path, request_id))
-}
+// `write_spawn_request` is provided by `fellowship::runtime` so the native
+// Orchestrator (Phase 12) and this CLI agree on the on-disk shape.
+use fellowship::runtime::write_spawn_request;
 
 fn write_release_request(root: &Path, agent_id: &str) -> Result<(PathBuf, String)> {
     let dir = ensure_subdir(root, RELEASE_REQUEST_DIR)?;
@@ -248,6 +233,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fellowship::runtime::{SPAWN_REQUEST_DIR, SpawnRequest};
     use tempfile::TempDir;
 
     fn read_file(p: &Path) -> String {

@@ -13,9 +13,12 @@ use crate::agents::registry::{AgentRegistry, Liveness};
 use crate::event::Event;
 use crate::surface::{MemberId, Role, Surface};
 
-/// Roles that always exist as singleton members. Engineers are added dynamically
-/// in Phase 9 and live alongside these in `MembersPane.members`.
-const SINGLETON_ROLES: &[Role] = &[Role::Pm, Role::Orchestrator, Role::Architect, Role::Recon];
+/// Roles that always exist as singleton members. Phase 12 removed
+/// `Role::Orchestrator` from this list — orchestration is now a native
+/// fellowship-side tokio loop (`crate::agents::orchestrator`) that does not
+/// need an LLM PTY. The enum variant is kept for journal / heartbeat
+/// continuity (a future configuration could re-enable an LLM Orchestrator).
+const SINGLETON_ROLES: &[Role] = &[Role::Pm, Role::Architect, Role::Recon];
 
 pub struct MembersPane {
     pub members: Vec<MemberId>,
@@ -220,13 +223,15 @@ mod tests {
     }
 
     #[test]
-    fn new_lists_four_singletons_no_active() {
+    fn new_lists_three_singletons_no_active() {
+        // Phase 12 dropped Orchestrator from the singleton list (now native).
         let m = MembersPane::new();
         assert_eq!(m.selected, 0);
         assert!(m.active.is_none());
-        assert_eq!(m.members.len(), 4);
+        assert_eq!(m.members.len(), 3);
         assert_eq!(m.members[0], MemberId::singleton(Role::Pm));
-        assert_eq!(m.members[3], MemberId::singleton(Role::Recon));
+        assert_eq!(m.members[1], MemberId::singleton(Role::Architect));
+        assert_eq!(m.members[2], MemberId::singleton(Role::Recon));
     }
 
     #[test]
@@ -253,8 +258,8 @@ mod tests {
 
     #[test]
     fn enter_emits_switch_surface_event() {
+        // Phase 12: Architect is now index 1 (PM=0, Architect=1, Recon=2).
         let mut m = MembersPane::new();
-        m.handle_key(key(KeyCode::Char('j')));
         m.handle_key(key(KeyCode::Char('j')));
         let event = m.handle_key(key(KeyCode::Enter));
         match event {

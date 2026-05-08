@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc;
 use tokio::time;
 
-use fellowship::agents::{spawn as agent_spawn, watcher};
+use fellowship::agents::{orchestrator, spawn as agent_spawn, watcher};
 use fellowship::app::App;
 use fellowship::beads;
 use fellowship::config;
@@ -186,6 +186,22 @@ async fn run(
             if tick_tx.send(Event::GitRefresh).is_err() {
                 break;
             }
+        }
+    });
+
+    // Phase 12: native Orchestrator loop. Polls `bd list --json` and writes
+    // a `SpawnRequest` for each open `role:engineer` bead with no
+    // assignee. Replaces the LLM Orchestrator PTY which never auto-ticked.
+    let orchestrator_runtime_root = runtime_root.clone();
+    tokio::spawn(async move {
+        if let Err(e) = orchestrator::run(
+            orchestrator_runtime_root,
+            app.max_engineers,
+            Duration::from_secs(orchestrator::DEFAULT_POLL_SECS),
+        )
+        .await
+        {
+            error!("orchestrator loop exited: {e:#}");
         }
     });
 
