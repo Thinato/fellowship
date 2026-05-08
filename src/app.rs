@@ -55,6 +55,9 @@ pub struct App {
     /// PATH override applied to every member-surface PTY. Includes the
     /// `~/.fellowship/bin/` shim dir as the first entry.
     pub agent_path: String,
+    /// On-disk dir holding the role prompt files. Used to compute the path
+    /// passed to `claude --append-system-prompt-file` for each member spawn.
+    pub prompts_root: PathBuf,
     /// Whether the `claude` CLI was found on PATH at boot. Drives the
     /// real-vs-banner spawn shape in [`agents::spawn::plan_for`] and the
     /// PM-default-focus decision in `App::new`.
@@ -89,6 +92,7 @@ impl App {
     pub fn new(
         root_path: PathBuf,
         runtime_root: &std::path::Path,
+        prompts_root: PathBuf,
         session_id: String,
         agent_path: &str,
         claude_available: bool,
@@ -108,7 +112,9 @@ impl App {
         // Phase 10 replaces the banner with the real `claude` invocation.
         for role in [Role::Pm, Role::Orchestrator, Role::Architect, Role::Recon] {
             let id = MemberId::singleton(role);
-            let action = crate::agents::spawn::plan_for(role, &id.label(), claude_available);
+            let prompt_path = crate::agents::spawn::prompt_path_for(&prompts_root, role);
+            let action =
+                crate::agents::spawn::plan_for(role, &id.label(), claude_available, &prompt_path);
             let base_env = vec![("PATH".to_string(), agent_path.to_string())];
             let pane = crate::agents::spawn::execute(
                 &action,
@@ -153,6 +159,7 @@ impl App {
             beads: Vec::new(),
             session_id,
             agent_path: agent_path.to_string(),
+            prompts_root,
             claude_available,
             max_engineers: 4,
             spawn_queue: VecDeque::new(),
@@ -470,8 +477,13 @@ impl App {
         let worktree_path = git::add_worktree(&repo, branch).await?;
 
         let agent_id_str = id.label();
-        let action =
-            crate::agents::spawn::plan_for(Role::Engineer, &agent_id_str, self.claude_available);
+        let prompt_path = crate::agents::spawn::prompt_path_for(&self.prompts_root, Role::Engineer);
+        let action = crate::agents::spawn::plan_for(
+            Role::Engineer,
+            &agent_id_str,
+            self.claude_available,
+            &prompt_path,
+        );
 
         // Base env: PATH (safe-git shim) + spawn request id for traceability.
         // The action's own env (AGENT_PROMPT / AGENT_ID / optional

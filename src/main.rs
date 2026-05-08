@@ -77,6 +77,15 @@ async fn main() -> Result<()> {
         "safe-git shims installed for agent surfaces"
     );
 
+    // Materialize the role prompts on disk so `claude --append-system-prompt-file`
+    // can read them. Idempotent; safe to call every boot.
+    let prompts_root = runtime_root.join("prompts");
+    agent_spawn::write_prompt_files(&prompts_root)?;
+    info!(
+        prompts_root = %prompts_root.display(),
+        "agent role prompts materialized"
+    );
+
     // Probe `claude` once at boot. When absent, member surfaces fall back to
     // a placeholder banner that drops the user into a normal bash so
     // fellowship still runs in dev environments without claude installed.
@@ -100,6 +109,7 @@ async fn main() -> Result<()> {
         &mut terminal,
         root_path,
         runtime_root,
+        prompts_root,
         session_id.clone(),
         agent_path,
         claude_available,
@@ -126,6 +136,7 @@ async fn run(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     root_path: PathBuf,
     runtime_root: PathBuf,
+    prompts_root: PathBuf,
     session_id: String,
     agent_path: String,
     claude_available: bool,
@@ -150,6 +161,7 @@ async fn run(
     let mut app = App::new(
         root_path.clone(),
         &runtime_root,
+        prompts_root,
         session_id,
         &agent_path,
         claude_available,
