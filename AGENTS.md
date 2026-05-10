@@ -32,6 +32,17 @@ If any step fails, fix the root cause before continuing — do not paper over wi
 - Worktrees go on disk at `$HOME/.fellowship/worktrees/<owner>/<repo>/<branch>` with branch slashes preserved. Logic in `git::worktree_path_for`.
 - Config: `$HOME/.config/fellowship/config.toml` (global) merged with `<repo>/.fellowship/config.toml` (local). Local wins per field.
 
+## Editing files
+
+- **Always read a file before its first edit in the current session.** This avoids editing against stale assumptions and catches recent unrelated changes you'd otherwise clobber. Subsequent edits to the same file in the same loop don't need a re-read — the Edit tool will reject obviously stale state.
+- Match existing indent / brace / import-grouping style of the file you're editing. Don't re-format unrelated lines.
+
+## Pull requests
+
+- **Direct pushes to `master` are blocked.** All changes land via PR.
+- **Bump `Cargo.toml` version before opening a PR**, even for tiny changes. The version field is the contract install.sh + the release tarball depend on; treating it as load-bearing per-PR avoids the "we shipped agentic-ui under v0.1.0" bug class. Use semver: bug fix → patch, new feature → minor, breaking change → major. `Cargo.lock` updates with `cargo check` after the bump.
+- After merge, tagging the new version (`git tag vX.Y.Z && git push origin vX.Y.Z`) triggers `.github/workflows/release.yml` to build the three-binary tarball.
+
 ## Don't
 
 - Don't add new top-level modules without a clear need; prefer extending existing ones.
