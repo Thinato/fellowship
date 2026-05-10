@@ -18,6 +18,11 @@ pub enum Action {
     FocusDir(Dir),
     SwitchWorktree(usize),
     Quit,
+    CyclePane,
+    /// Focus the right column AND show the Git Status sub-view.
+    FocusGitView,
+    /// Focus the right column AND show the Beads/Journal sub-view.
+    FocusStatusView,
     ToggleHelp,
     SendLiteralPrefix,
     EnterCommandMode,
@@ -102,12 +107,20 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
         Action::FocusPane(PaneId::Workspaces),
     );
     map.insert(
+        KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+        Action::FocusPane(PaneId::Members),
+    );
+    map.insert(
         KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
         Action::FocusPane(PaneId::Terminal),
     );
     map.insert(
         KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
-        Action::FocusPane(PaneId::GitStatus),
+        Action::FocusGitView,
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+        Action::FocusStatusView,
     );
     map.insert(
         KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
@@ -116,6 +129,10 @@ pub fn default_bindings() -> HashMap<KeyEvent, Action> {
     map.insert(
         KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
         Action::ToggleHelp,
+    );
+    map.insert(
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+        Action::CyclePane,
     );
     map.insert(
         KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
@@ -204,13 +221,23 @@ mod tests {
     }
 
     #[test]
-    fn prefix_then_g_focuses_gitstatus() {
+    fn prefix_then_g_focuses_git_view() {
         let km = make_keymap();
         let mut mode = InputMode::Normal;
 
         km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         let a = km.handle(&mut mode, char_key('g'), PaneId::Terminal);
-        assert_eq!(a, Action::FocusPane(PaneId::GitStatus));
+        assert_eq!(a, Action::FocusGitView);
+    }
+
+    #[test]
+    fn prefix_then_s_focuses_status_view() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('s'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusStatusView);
     }
 
     #[test]
@@ -309,6 +336,24 @@ mod tests {
         km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
         let a = km.handle(&mut mode, char_key('l'), PaneId::Terminal);
         assert_eq!(a, Action::FocusDir(Dir::Right));
+    }
+
+    #[test]
+    fn prefix_then_m_focuses_members() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('m'), PaneId::Terminal);
+        assert_eq!(a, Action::FocusPane(PaneId::Members));
+    }
+
+    #[test]
+    fn prefix_then_o_cycles_pane() {
+        let km = make_keymap();
+        let mut mode = InputMode::Normal;
+        km.handle(&mut mode, ctrl_a(), PaneId::Terminal);
+        let a = km.handle(&mut mode, char_key('o'), PaneId::Terminal);
+        assert_eq!(a, Action::CyclePane);
     }
 
     #[test]

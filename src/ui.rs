@@ -1,4 +1,4 @@
-use crate::app::{App, PaneId};
+use crate::app::{App, PaneId, RightView};
 use crate::keymap::InputMode;
 use ratatui::{
     Frame,
@@ -31,9 +31,13 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .areas(main_area);
 
-    render_workspaces_pane(frame, app, left_area);
+    let [members_area, workspaces_area] =
+        Layout::vertical([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(left_area);
+
+    render_members_pane(frame, app, members_area);
+    render_workspaces_pane(frame, app, workspaces_area);
     render_terminal_pane(frame, app, mid_area);
-    render_gitstatus_pane(frame, app, right_area);
+    render_right_column(frame, app, right_area);
     render_status_bar(frame, app, status_area);
 
     if app.show_help {
@@ -72,6 +76,19 @@ fn render_confirm_delete(frame: &mut Frame, area: Rect, name: &str) {
     );
 }
 
+fn render_members_pane(frame: &mut Frame, app: &mut App, area: Rect) {
+    let focused = app.focus == PaneId::Members;
+    let now_ms = crate::runtime::now_ms();
+    app.members.render(
+        frame,
+        area,
+        focused,
+        &app.agent_registry,
+        now_ms,
+        &app.failed_agents,
+    );
+}
+
 fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Workspaces;
     app.workspaces.render(frame, area, focused);
@@ -79,15 +96,18 @@ fn render_workspaces_pane(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_terminal_pane(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::Terminal;
-    let path = app.active_path.clone();
-    if let Some(t) = app.terminals.get_mut(&path) {
+    let key = app.active_surface.clone();
+    if let Some(t) = app.terminals.get_mut(&key) {
         t.render(frame, area, focused);
     }
 }
 
-fn render_gitstatus_pane(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_right_column(frame: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == PaneId::GitStatus;
-    app.git_status.render(frame, area, focused);
+    match app.right_view {
+        RightView::Git => app.git_status.render(frame, area, focused),
+        RightView::Status => app.status.render(frame, area, focused, &app.beads),
+    }
 }
 
 fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -104,24 +124,49 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let prefix_indicator = matches!(app.input_mode, InputMode::AwaitingPrefixFollower);
 
     let focus_label = match app.focus {
+        PaneId::Members => "MEMBERS",
         PaneId::Workspaces => "WORKSPACES",
         PaneId::Terminal => "TERMINAL",
-        PaneId::GitStatus => "GIT STATUS",
+        PaneId::GitStatus => match app.right_view {
+            RightView::Git => "GIT STATUS",
+            RightView::Status => "STATUS",
+        },
     };
 
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", focus_label),
+    let mut spans = vec![Span::styled(
+        format!(" {} ", focus_label),
+        Style::default()
+            .fg(theme::STATUS_FG)
+            .bg(theme::STATUS_BG)
+            .add_modifier(Modifier::BOLD),
+    )];
+
+    if let crate::surface::Surface::Member(id) = &app.active_surface {
+        spans.push(Span::styled(
+            format!(" [member: {}] ", id.label()),
             Style::default()
-                .fg(theme::STATUS_FG)
+                .fg(ratatui::style::Color::Green)
                 .bg(theme::STATUS_BG)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            "  Ctrl+a: prefix  ?:help  :quit",
-            Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
-        ),
-    ];
+        ));
+    }
+
+    spans.push(Span::styled(
+        "  Ctrl+a: prefix  ?:help  :quit",
+        Style::default().fg(theme::STATUS_FG).bg(theme::STATUS_BG),
+    ));
+
+    // Short session id surfaced for debugging — when the user runs
+    // `fellowship-ctl` from a non-PTY shell they need to know which session
+    // dir to write into. The CURRENT_SESSION marker auto-resolves it, but
+    // surfacing the id avoids a second `cat` to discover it.
+    let short = app.session_id.get(..8).unwrap_or(app.session_id.as_str());
+    spans.push(Span::styled(
+        format!("  session={short}"),
+        Style::default()
+            .fg(ratatui::style::Color::DarkGray)
+            .bg(theme::STATUS_BG),
+    ));
 
     if prefix_indicator {
         spans.push(Span::styled(
@@ -133,13 +178,27 @@ fn render_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         ));
     }
 
+    // Escalation banner — when the watchdog has given up on one or more
+    // members (>= max_restarts restart attempts failed) the user is informed
+    // here. Plan §3.6 calls for a "persistent banner".
+    if !app.failed_agents.is_empty() {
+        let names: Vec<String> = app.failed_agents.iter().map(|m| m.label()).collect();
+        spans.push(Span::styled(
+            format!("  [!] watchdog failed: {}", names.join(", ")),
+            Style::default()
+                .fg(ratatui::style::Color::Red)
+                .bg(theme::STATUS_BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     let paragraph = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme::STATUS_BG));
     frame.render_widget(paragraph, area);
 }
 
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
     let help_width = 52u16;
-    let help_height = 17u16;
+    let help_height = 21u16;
     let x = area.x + area.width.saturating_sub(help_width) / 2;
     let y = area.y + area.height.saturating_sub(help_height) / 2;
     let popup_area = Rect::new(
@@ -151,9 +210,12 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 
     let help_text = vec![
         Line::from(""),
+        Line::from("  Ctrl+a m         Focus Members"),
         Line::from("  Ctrl+a e         Focus Workspaces"),
         Line::from("  Ctrl+a t         Focus Terminal"),
-        Line::from("  Ctrl+a g         Focus Git Status"),
+        Line::from("  Ctrl+a g         Focus Git view (right column)"),
+        Line::from("  Ctrl+a s         Focus Status view (right column)"),
+        Line::from("  Ctrl+a o         Cycle through panes"),
         Line::from("  Ctrl+a q         Quit"),
         Line::from("  Ctrl+a ?         Toggle help"),
         Line::from("  Ctrl+a Ctrl+a    Send literal ^A to PTY"),
@@ -166,6 +228,8 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  n     New worktree (Workspaces)"),
         Line::from("  d     Delete selected worktree"),
         Line::from("  Enter Switch to worktree"),
+        Line::from("  J     Toggle Beads/Journal (Status view)"),
+        Line::from("  f     Toggle journal filter to recent agent"),
         Line::from(""),
     ];
 

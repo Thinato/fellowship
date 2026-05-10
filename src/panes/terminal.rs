@@ -4,6 +4,21 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+
+/// `portable_pty::CommandBuilder` starts with an empty env, so spawned
+/// processes don't see HOME, USER, $PATH, claude/anthropic auth state, etc.
+/// Forward the parent process env explicitly. Callers may override individual
+/// vars afterwards (TERM, PATH for the safe-git shim, AGENT_*).
+///
+/// `TERM` is explicitly skipped because every caller sets `xterm-256color`.
+fn inherit_parent_env(cmd: &mut CommandBuilder) {
+    for (k, v) in std::env::vars_os() {
+        if k == "TERM" {
+            continue;
+        }
+        cmd.env(&k, &v);
+    }
+}
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -193,6 +208,63 @@ impl TerminalPane {
         tx: UnboundedSender<Event>,
         startup_cmd: Option<&str>,
     ) -> Result<Self> {
+        Self::spawn_with_env(rows, cols, cwd, tx, startup_cmd, &[])
+    }
+
+    /// Like [`Self::spawn`] but with extra environment variables added to
+    /// the spawned shell. Member surfaces use this to inject a `PATH`
+    /// override that points at the `safe-git` shim before the real `git`.
+    pub fn spawn_with_env(
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        tx: UnboundedSender<Event>,
+        startup_cmd: Option<&str>,
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self> {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let mut cmd = CommandBuilder::new(&shell);
+        cmd.cwd(cwd);
+        inherit_parent_env(&mut cmd);
+        cmd.env("TERM", "xterm-256color");
+        for (k, v) in extra_env {
+            cmd.env(*k, *v);
+        }
+        Self::spawn_command(rows, cols, tx, cmd, startup_cmd)
+    }
+
+    /// Spawn an arbitrary program directly inside the PTY (no shell wrapper).
+    /// Used by member surfaces that need to launch a specific binary with
+    /// arguments passed as real argv (no shell quoting hazards).
+    pub fn spawn_program_with_env(
+        rows: u16,
+        cols: u16,
+        cwd: &Path,
+        tx: UnboundedSender<Event>,
+        program: &str,
+        args: &[&str],
+        extra_env: &[(&str, &str)],
+    ) -> Result<Self> {
+        let mut cmd = CommandBuilder::new(program);
+        for a in args {
+            cmd.arg(*a);
+        }
+        cmd.cwd(cwd);
+        inherit_parent_env(&mut cmd);
+        cmd.env("TERM", "xterm-256color");
+        for (k, v) in extra_env {
+            cmd.env(*k, *v);
+        }
+        Self::spawn_command(rows, cols, tx, cmd, None)
+    }
+
+    fn spawn_command(
+        rows: u16,
+        cols: u16,
+        tx: UnboundedSender<Event>,
+        cmd: CommandBuilder,
+        startup_cmd: Option<&str>,
+    ) -> Result<Self> {
         let pty_system = native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
@@ -200,11 +272,6 @@ impl TerminalPane {
             pixel_width: 0,
             pixel_height: 0,
         })?;
-
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let mut cmd = CommandBuilder::new(&shell);
-        cmd.cwd(cwd);
-        cmd.env("TERM", "xterm-256color");
 
         let child = pair.slave.spawn_command(cmd)?;
         // Must drop slave so EOF propagates when child exits

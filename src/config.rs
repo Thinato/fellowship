@@ -30,7 +30,7 @@ fn read_config(path: Option<PathBuf>) -> Option<Config> {
     match toml::from_str::<Config>(&text) {
         Ok(cfg) => Some(cfg),
         Err(e) => {
-            eprintln!("fellowship: failed to parse {}: {e}", path.display());
+            tracing::error!("failed to parse config {}: {e}", path.display());
             None
         }
     }

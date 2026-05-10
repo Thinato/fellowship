@@ -7,6 +7,14 @@ edition = "2024"
 name = "fellowship"
 path = "src/main.rs"
 
+[[bin]]
+name = "fellowship-ctl"
+path = "src/bin/fellowship-ctl.rs"
+
+[[bin]]
+name = "safe-git"
+path = "src/bin/safe-git.rs"
+
 [dependencies]
 ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
@@ -21,6 +29,13 @@ notify = "6"
 tui-input = "0.10"
 futures = "0.3"
 toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = "thin"
