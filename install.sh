@@ -102,15 +102,23 @@ main() {
     download "$url" "$tmp/fellowship.tar.gz"
     tar -C "$tmp" -xzf "$tmp/fellowship.tar.gz"
 
-    src="$tmp/${name}/fellowship"
-    [ -f "$src" ] || err "binary not found in archive at $src"
-
+    # Three binaries ship together: `fellowship` (the TUI), `fellowship-ctl`
+    # (agent-facing helper invoked from PTYs for heartbeats / spawn-requests
+    # / journal writes), and `safe-git` (the wrapper the TUI requires to
+    # live next to it for guard installation at boot).
     mkdir -p "$INSTALL_DIR"
-    mv "$src" "$INSTALL_DIR/fellowship"
-    chmod +x "$INSTALL_DIR/fellowship"
+    for bin in fellowship fellowship-ctl safe-git; do
+        src="$tmp/${name}/${bin}"
+        [ -f "$src" ] || err "binary not found in archive at $src"
+        mv "$src" "$INSTALL_DIR/${bin}"
+        chmod +x "$INSTALL_DIR/${bin}"
+    done
 
     info ""
-    info "installed: $INSTALL_DIR/fellowship"
+    info "installed:"
+    info "  $INSTALL_DIR/fellowship"
+    info "  $INSTALL_DIR/fellowship-ctl"
+    info "  $INSTALL_DIR/safe-git"
 
     case ":${PATH:-}:" in
         *":$INSTALL_DIR:"*) ;;

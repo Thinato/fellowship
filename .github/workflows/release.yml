@@ -51,8 +51,11 @@ jobs:
           linker = "${{ matrix.cross_linker }}"
           EOF
 
-      - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Build release binaries
+        # All three binaries must ship together: fellowship's guard layer
+        # boots by locating `safe-git` next to itself and PTYs invoke
+        # `fellowship-ctl` for heartbeats / spawn-requests / journal writes.
+        run: cargo build --release --locked --target ${{ matrix.target }} --bins
 
       - name: Package tarball
         id: pkg
@@ -61,6 +64,8 @@ jobs:
           name="fellowship-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
           cp "target/${{ matrix.target }}/release/fellowship" "dist/${name}/"
+          cp "target/${{ matrix.target }}/release/fellowship-ctl" "dist/${name}/"
+          cp "target/${{ matrix.target }}/release/safe-git" "dist/${name}/"
           cp README.md "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           echo "artifact=dist/${name}.tar.gz" >> "$GITHUB_OUTPUT"
