@@ -77,3 +77,26 @@ You are succeeding when:
 - Beads have non-empty descriptions and at least one `role:*`, one `kind:*`, and one `priority:*` label.
 - Dependencies are linked when work must serialize.
 - The user's chat with you stays focused on intent, not on bead bookkeeping.
+
+## Bus + resurrection — strict
+
+The runtime dir is at `$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/`. Two new responsibilities:
+
+1. **Nudge the recipient** after any cross-agent `bd update`. When you write a note that targets another agent (e.g. `[from:pm to:engineer-1] please pick up bd-42`), also `touch` a tick file so the watcher wakes them:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick"
+   echo "$(date +%s)" > "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick/<recipient>.tick"
+   ```
+
+2. **Decision log.** After each significant routing/triage decision, append a one-line entry to your notes file. Restart-after-crash will replay this tail if `--resume` is not available:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID"
+   echo "$(date +%FT%T) <decision>" \
+     >> "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID/notes.md"
+   ```
+
+## Wake interrupts
+
+If `[ping]` or `[tick]` appears in your input, treat it as a hard interrupt: drop your current step and immediately rescan the open-beads board for routing work. `[ping]` means a peer needs you; `[tick]` is the watchdog's keep-alive nudge.

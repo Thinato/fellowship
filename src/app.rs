@@ -58,6 +58,11 @@ pub struct App {
     /// On-disk dir holding the role prompt files. Used to compute the path
     /// passed to `claude --append-system-prompt-file` for each member spawn.
     pub prompts_root: PathBuf,
+    /// Active per-session runtime directory (typically
+    /// `~/.fellowship/runtime/<session>/`). Used by spawn / restart paths to
+    /// persist `AgentState` JSON files so a crashed PTY can be resumed with
+    /// `claude -r <session_id>` after restart.
+    pub runtime_root: PathBuf,
     /// Whether the `claude` CLI was found on PATH at boot. Drives the
     /// real-vs-banner spawn shape in [`agents::spawn::plan_for`] and the
     /// PM-default-focus decision in `App::new`.
@@ -75,7 +80,10 @@ pub struct App {
     /// reaches `max_restarts`, the member is added to `failed_agents` and no
     /// further restarts are attempted (escalation banner shown in status bar).
     pub restart_counts: HashMap<MemberId, u32>,
-    /// Members the watchdog has given up on (>= `max_restarts` restarts).
+    /// Members the watchdog has given up on. Under the new backoff regime
+    /// (post agent-comms-resurrection plan) the watchdog never gives up on
+    /// its own; the set is only populated for hard, deterministic failures
+    /// (e.g. claude binary missing at restart time).
     pub failed_agents: HashSet<MemberId>,
     /// Members the watchdog has already authored a `[fellowship-watchdog]
     /// agent <id> stale` bead for in the current stale window. Cleared when
@@ -83,9 +91,20 @@ pub struct App {
     /// or escalates to `failed_agents`) so the next stale period gets a fresh
     /// warning bead. Plan §3.6.
     pub stale_warned: HashSet<MemberId>,
-    /// Max restarts per member before declaring failure (Phase 11 hardcodes
-    /// 3; Phase 10.5+ wires `Config::agents.max_restarts`).
+    /// Legacy max-restart cap. The new backoff regime treats the watchdog as
+    /// infinite-retry; this is kept at `u32::MAX` so the pure
+    /// `decide_watchdog_actions` decision (which still references the cap)
+    /// never emits `Escalate`. Removed entirely in a follow-up cleanup.
     pub max_restarts: u32,
+    /// Members for which a `bd human` bead has already been filed after they
+    /// hit the backoff cap. Prevents duplicate beads while the watchdog keeps
+    /// retrying silently at the 5-minute cadence.
+    pub cap_reported: HashSet<MemberId>,
+    /// Last wall-clock millisecond at which we wrote a `[ping]` / `[tick]`
+    /// nudge into a member's PTY. Read by the role-tier handler to skip
+    /// agents that were just nudged via the bus-tick watcher, and bumped
+    /// whenever we actually inject a nudge line.
+    pub last_nudge_at: HashMap<MemberId, u128>,
     pub show_help: bool,
     pub should_quit: bool,
     pub pending_delete: Option<(PathBuf, String)>,
@@ -135,8 +154,14 @@ impl App {
         for role in [Role::Pm, Role::Architect, Role::Recon] {
             let id = MemberId::singleton(role);
             let prompt_path = crate::agents::spawn::prompt_path_for(&prompts_root, role);
-            let action =
-                crate::agents::spawn::plan_for(role, &id.label(), claude_available, &prompt_path);
+            let session_uuid = uuid::Uuid::new_v4();
+            let action = crate::agents::spawn::plan_for(
+                role,
+                &id.label(),
+                claude_available,
+                &prompt_path,
+                crate::agents::spawn::SessionStrategy::Fresh(session_uuid),
+            );
             let base_env = vec![("PATH".to_string(), agent_path.to_string())];
             let pane = crate::agents::spawn::execute(
                 &action,
@@ -147,6 +172,18 @@ impl App {
                 &base_env,
             )?;
             terminals.insert(Surface::Member(id), pane);
+            // Persist the session uuid now (best-effort) so a crash before the
+            // first heartbeat still allows resurrection via `claude -r <uuid>`.
+            // Only meaningful when claude is on PATH; skip otherwise.
+            if claude_available {
+                let mut state = crate::agents::state::AgentState::new(
+                    &id,
+                    "claude",
+                    crate::runtime::now_ms() as u64,
+                );
+                state.set_session_id(session_uuid.to_string());
+                let _ = state.save(runtime_root);
+            }
         }
 
         let mut agent_registry = AgentRegistry::new();
@@ -182,6 +219,7 @@ impl App {
             session_id,
             agent_path: agent_path.to_string(),
             prompts_root,
+            runtime_root: runtime_root.to_path_buf(),
             claude_available,
             max_engineers: 4,
             spawn_queue: VecDeque::new(),
@@ -189,7 +227,12 @@ impl App {
             restart_counts: HashMap::new(),
             failed_agents: HashSet::new(),
             stale_warned: HashSet::new(),
-            max_restarts: 3,
+            // Effectively-infinite cap; real throttling is via per-agent
+            // exponential backoff in `AgentState::bump_restart`. The pure
+            // decision still references this field to suppress `Escalate`.
+            max_restarts: u32::MAX,
+            cap_reported: HashSet::new(),
+            last_nudge_at: HashMap::new(),
             show_help: false,
             should_quit: false,
             pending_delete: None,
@@ -439,12 +482,23 @@ impl App {
                 debug!(agent = %record.agent_id, status = %record.status, "heartbeat");
                 // Receiving a heartbeat clears any restart count we'd been
                 // accumulating against this agent — a healthy agent should
-                // not be punished for a transient earlier silence.
+                // not be punished for a transient earlier silence. Also clear
+                // the on-disk backoff counter + cap-reported flag so a future
+                // crash burst restarts the schedule from zero rather than
+                // jumping straight to the 5-min cap.
                 if let Some(id) = parse_engineer_id(&record.agent_id)
                     .or_else(|| singleton_id_for_label(&record.agent_id))
                 {
                     self.restart_counts.remove(&id);
                     self.stale_warned.remove(&id);
+                    self.cap_reported.remove(&id);
+                    if let Ok(Some(mut state)) =
+                        crate::agents::state::AgentState::load(&self.runtime_root, &id.label())
+                        && (state.restart_attempts > 0 || state.next_restart_at_ms.is_some())
+                    {
+                        state.clear_restart();
+                        let _ = state.save(&self.runtime_root);
+                    }
                 }
                 self.agent_registry.upsert(record);
             }
@@ -462,6 +516,61 @@ impl App {
             }
             Event::JournalSnapshot(entries) => {
                 self.status.replace_journal(entries);
+            }
+            Event::AgentNudge(id) => {
+                // Inject a hard-interrupt line into the recipient's PTY so its
+                // agent's prompt-loop step that handles `[ping]` re-reads the
+                // bead board immediately. Best-effort: if the recipient has
+                // no live PTY (released, never spawned), drop silently. Rate-
+                // limited at 500 ms per agent so a chatty bd-update burst can't
+                // derail the recipient's current step with 40 `[ping]` lines.
+                const NUDGE_MIN_GAP_MS: u128 = 500;
+                let now = crate::runtime::now_ms();
+                let throttled = self
+                    .last_nudge_at
+                    .get(&id)
+                    .map(|last| now.saturating_sub(*last) < NUDGE_MIN_GAP_MS)
+                    .unwrap_or(false);
+                if throttled {
+                    debug!(agent = %id.label(), "AgentNudge throttled");
+                } else if let Some(pane) = self.terminals.get(&Surface::Member(id)) {
+                    let _ = pane.write_keys(b"\n[ping] bead updated\n");
+                    self.last_nudge_at.insert(id, now);
+                } else {
+                    debug!(
+                        agent = %id.label(),
+                        "AgentNudge dropped: no live PTY for recipient"
+                    );
+                }
+            }
+            Event::RoleTick(role) => {
+                // Role-tiered keep-alive: only nudge members of this role that
+                // have not been nudged within the last half-period. Both the
+                // tick cadence and this gate share `Role::tick_period_secs` so
+                // tuning one updates both.
+                let half_period_ms: u128 = (role.tick_period_secs() as u128) * 1000 / 2;
+                let now = crate::runtime::now_ms();
+                let live: Vec<MemberId> = self
+                    .members
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|m| m.role == role)
+                    .collect();
+                for id in live {
+                    let stale = self
+                        .last_nudge_at
+                        .get(&id)
+                        .map(|t| now.saturating_sub(*t) > half_period_ms)
+                        .unwrap_or(true);
+                    if !stale {
+                        continue;
+                    }
+                    if let Some(pane) = self.terminals.get(&Surface::Member(id)) {
+                        let _ = pane.write_keys(b"\n[tick] re-check beads\n");
+                        self.last_nudge_at.insert(id, now);
+                    }
+                }
             }
             Event::DiffUpdated(diff) => {
                 self.git_status.update_diff(diff);
@@ -517,11 +626,13 @@ impl App {
 
         let agent_id_str = id.label();
         let prompt_path = crate::agents::spawn::prompt_path_for(&self.prompts_root, Role::Engineer);
+        let session_uuid = uuid::Uuid::new_v4();
         let action = crate::agents::spawn::plan_for(
             Role::Engineer,
             &agent_id_str,
             self.claude_available,
             &prompt_path,
+            crate::agents::spawn::SessionStrategy::Fresh(session_uuid),
         );
 
         // Base env: PATH (safe-git shim) + spawn request id for traceability.
@@ -546,6 +657,15 @@ impl App {
         self.terminals.insert(Surface::Member(id), pane);
         self.members.add_member(id);
         self.engineer_worktrees.insert(id, worktree_path.clone());
+        if self.claude_available {
+            let mut state = crate::agents::state::AgentState::new(
+                &id,
+                "claude",
+                crate::runtime::now_ms() as u64,
+            );
+            state.set_session_id(session_uuid.to_string());
+            let _ = state.save(&self.runtime_root);
+        }
 
         info!(
             engineer = %id.label(),
@@ -572,6 +692,8 @@ impl App {
         self.engineer_worktrees.remove(&id);
         self.restart_counts.remove(&id);
         self.failed_agents.remove(&id);
+        self.cap_reported.remove(&id);
+        self.last_nudge_at.remove(&id);
         info!(engineer = %id.label(), "engineer released");
 
         // Drain one queued spawn request if any (and we now have headroom).
@@ -610,24 +732,99 @@ impl App {
         for action in actions {
             match action {
                 WatchdogAction::Restart { id, attempt } => {
+                    let now64 = now as u64;
+                    // Single owner of AgentState for this restart: load once,
+                    // mutate, save once. `restart_agent` no longer touches the
+                    // file, so there is one writer per restart cycle.
+                    let mut state =
+                        crate::agents::state::AgentState::load(&self.runtime_root, &id.label())
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| {
+                                crate::agents::state::AgentState::new(&id, "claude", now64)
+                            });
+
+                    // Backoff gate: skip this tick if next_restart_at_ms is
+                    // still in the future. Watchdog runs every 5 s, so an
+                    // agent on the 5-min cap will skip ~60 ticks per retry.
+                    if let Some(due) = state.next_restart_at_ms
+                        && due > now64
+                    {
+                        debug!(
+                            agent = %id.label(),
+                            due_in_ms = due.saturating_sub(now64),
+                            "watchdog: restart deferred by backoff"
+                        );
+                        continue;
+                    }
+
+                    // Pick Resume when we have a parseable session uuid;
+                    // mint a Fresh one otherwise.
+                    let (session_uuid, strategy) = match state
+                        .session_id
+                        .as_deref()
+                        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                    {
+                        Some(u) => (u, crate::agents::spawn::SessionStrategy::Resume(u)),
+                        None => {
+                            let u = uuid::Uuid::new_v4();
+                            (u, crate::agents::spawn::SessionStrategy::Fresh(u))
+                        }
+                    };
+
                     self.restart_counts.insert(id, attempt);
                     info!(
                         agent = %id.label(),
                         attempt = attempt,
-                        max = self.max_restarts,
+                        resume = matches!(strategy, crate::agents::spawn::SessionStrategy::Resume(_)),
                         "watchdog: agent dead, attempting restart"
                     );
-                    if let Err(e) = self.restart_agent(id) {
+                    if let Err(e) = self.restart_agent(id, strategy) {
                         error!(agent = %id.label(), "watchdog restart failed: {e:#}");
+                        continue;
                     }
-                }
-                WatchdogAction::Escalate { id, restarts } => {
-                    if self.failed_agents.insert(id) {
-                        error!(
-                            agent = %id.label(),
-                            restarts = restarts,
-                            "watchdog: agent failed after max restarts; not restarting again"
+
+                    let delay = state.bump_restart(now64);
+                    state.set_session_id(session_uuid.to_string());
+                    state.spawned_at_ms = now64;
+                    let _ = state.save(&self.runtime_root);
+
+                    // File a single `bd human` bead the first time this agent
+                    // hits the 300 s cap. Cleared on the next healthy recovery
+                    // (Event::AgentHeartbeat) so a later crash burst re-fires.
+                    let cap = crate::agents::state::BACKOFF_SECS
+                        .last()
+                        .copied()
+                        .unwrap_or(300);
+                    if delay >= cap && self.cap_reported.insert(id) {
+                        let label = id.label();
+                        let title = format!(
+                            "[fellowship-watchdog] agent {} at restart-backoff cap",
+                            label
                         );
+                        let attempts = state.restart_attempts;
+                        let description = format!(
+                            "Agent `{}` has been restarted {} times and is now \
+                             retrying on the {}s backoff cap. The watchdog will \
+                             keep retrying silently. Human inspection recommended.",
+                            label, attempts, cap,
+                        );
+                        tokio::spawn(async move {
+                            match crate::beads::create_bead(
+                                &title,
+                                &description,
+                                &["fellowship-watchdog", "restart-cap"],
+                            )
+                            .await
+                            {
+                                Ok(bead_id) => {
+                                    info!(agent = %label, bead = %bead_id, "restart-cap bead created")
+                                }
+                                Err(e) => {
+                                    error!(agent = %label, "restart-cap bead create failed: {e:#}")
+                                }
+                            }
+                        });
                     }
                 }
                 WatchdogAction::NoteStale(id) => {
@@ -671,11 +868,15 @@ impl App {
         }
     }
 
-    /// Re-spawn `id`'s PTY in place. Singletons re-spawn at the current
-    /// workspace root; engineers re-spawn into their original worktree
-    /// (preserved across restarts). Caller is responsible for restart-count
-    /// bookkeeping; this function only does the I/O.
-    fn restart_agent(&mut self, id: MemberId) -> Result<()> {
+    /// Re-spawn `id`'s PTY in place using the caller-provided spawn strategy.
+    /// Pure I/O — does not touch `AgentState` on disk. The caller (typically
+    /// `run_watchdog`) is responsible for the load→bump→save cycle so the
+    /// state file has exactly one writer per restart.
+    fn restart_agent(
+        &mut self,
+        id: MemberId,
+        strategy: crate::agents::spawn::SessionStrategy,
+    ) -> Result<()> {
         let surface = Surface::Member(id);
         if let Some(mut old) = self.terminals.remove(&surface) {
             old.shutdown();
@@ -696,6 +897,7 @@ impl App {
             &id.label(),
             self.claude_available,
             &prompt_path,
+            strategy,
         );
         let base_env = vec![("PATH".to_string(), self.agent_path.clone())];
         let (rows, cols) = self.last_term_size;
@@ -718,11 +920,9 @@ impl App {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum WatchdogAction {
     /// Restart this member. `attempt` is the new counter value (1-based)
-    /// the side-effect pass should record.
+    /// the side-effect pass should record. Backoff timing is enforced by the
+    /// side-effect pass against `AgentState::next_restart_at_ms`, not here.
     Restart { id: MemberId, attempt: u32 },
-    /// Add this member to `failed_agents`. `restarts` is the count of
-    /// failed attempts that triggered escalation.
-    Escalate { id: MemberId, restarts: u32 },
     /// Member is Stale. Used purely for the debug log; no state change.
     NoteStale(MemberId),
     /// Author a `[fellowship-watchdog] agent <id> stale` bead and add `id`
@@ -744,7 +944,10 @@ fn decide_watchdog_actions(
     restart_counts: &HashMap<MemberId, u32>,
     failed_agents: &HashSet<MemberId>,
     stale_warned: &HashSet<MemberId>,
-    max_restarts: u32,
+    // Kept in the signature only so existing tests still compile until they
+    // are migrated; the value is ignored. The new backoff regime gates
+    // restarts in the side-effect pass via `AgentState::next_restart_at_ms`.
+    _max_restarts: u32,
     now_ms: u128,
 ) -> Vec<WatchdogAction> {
     use crate::agents::registry::Liveness;
@@ -759,17 +962,10 @@ fn decide_watchdog_actions(
                     out.push(WatchdogAction::ClearStale(*id));
                 }
                 let count = *restart_counts.get(id).unwrap_or(&0);
-                if count >= max_restarts {
-                    out.push(WatchdogAction::Escalate {
-                        id: *id,
-                        restarts: count,
-                    });
-                } else {
-                    out.push(WatchdogAction::Restart {
-                        id: *id,
-                        attempt: count + 1,
-                    });
-                }
+                out.push(WatchdogAction::Restart {
+                    id: *id,
+                    attempt: count + 1,
+                });
             }
             Liveness::Stale => {
                 out.push(WatchdogAction::NoteStale(*id));
@@ -974,32 +1170,6 @@ mod tests {
         assert_eq!(
             actions,
             vec![WatchdogAction::Restart { id: pm, attempt: 3 }]
-        );
-    }
-
-    #[test]
-    fn watchdog_escalates_at_max_restarts() {
-        let pm = MemberId::singleton(Role::Pm);
-        let now = 1_000_000;
-        let dead_ms = (HEARTBEAT_DEAD_SEC as u128) * 1000;
-        let reg = fresh_registry(&[("pm", now - dead_ms - 1)]);
-        let mut counts = HashMap::new();
-        counts.insert(pm, 3); // already at max
-        let actions = decide_watchdog_actions(
-            &[pm],
-            &reg,
-            &counts,
-            &HashSet::new(),
-            &HashSet::new(),
-            3,
-            now,
-        );
-        assert_eq!(
-            actions,
-            vec![WatchdogAction::Escalate {
-                id: pm,
-                restarts: 3
-            }]
         );
     }
 

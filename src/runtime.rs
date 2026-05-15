@@ -18,6 +18,11 @@ pub const STATE_DIR: &str = "state";
 pub const SPAWN_REQUEST_DIR: &str = "spawn-requests";
 pub const RELEASE_REQUEST_DIR: &str = "release-requests";
 pub const JOURNAL_FILE: &str = "journal.ndjson";
+/// Per-agent persistent state files (see `agents::state::AgentState`).
+pub const AGENT_STATE_DIR: &str = "agent_state";
+/// Bus-tick nudge files watched by `agents::watcher`. One file per recipient
+/// agent, written by other agents after cross-agent `bd update` calls.
+pub const BUS_TICK_DIR: &str = "bus-tick";
 
 /// Per-agent heartbeat record. Written by `fellowship-ctl heartbeat`,
 /// read by fellowship's watcher.
@@ -137,6 +142,38 @@ pub fn ensure_subdir(root: &Path, name: &str) -> Result<PathBuf> {
     Ok(p)
 }
 
+/// Directory holding per-agent persistent state JSON files. The directory
+/// itself is created lazily by `AgentState::save`.
+pub fn agent_state_dir(root: &Path) -> PathBuf {
+    root.join(AGENT_STATE_DIR)
+}
+
+/// Path to one agent's state file. `member_label` is the stable label such as
+/// `pm`, `architect`, `engineer-1` (see `MemberId::label`).
+pub fn agent_state_path(root: &Path, member_label: &str) -> PathBuf {
+    agent_state_dir(root).join(format!("{}.json", member_label))
+}
+
+/// Path to one agent's decision-log notes file. Lives next to the state JSON
+/// but inside a per-agent subdirectory so future per-agent artifacts (logs,
+/// cursors) have a home.
+pub fn agent_notes_path(root: &Path, member_label: &str) -> PathBuf {
+    agent_state_dir(root).join(member_label).join("notes.md")
+}
+
+/// Directory holding bus-tick nudge files. One file per recipient agent.
+/// Writes here are observed by `agents::watcher` and converted into
+/// `Event::AgentNudge`.
+pub fn bus_tick_dir(root: &Path) -> PathBuf {
+    root.join(BUS_TICK_DIR)
+}
+
+/// Path to one agent's bus-tick file. The recipient agent's PTY receives a
+/// `[ping]` line when this file is modified.
+pub fn bus_tick_path(root: &Path, member_label: &str) -> PathBuf {
+    bus_tick_dir(root).join(format!("{}.tick", member_label))
+}
+
 /// Write a `SpawnRequest` JSON file under `<root>/spawn-requests/<uuid>.json`.
 /// Returns `(path, request_id)`. Used by both `fellowship-ctl spawn-engineer`
 /// and the native fellowship-side Orchestrator (Phase 12) to enqueue
@@ -205,6 +242,35 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let p = ensure_subdir(tmp.path(), "state").unwrap();
         assert!(p.is_dir());
+    }
+
+    #[test]
+    fn agent_state_paths_are_under_runtime_root() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let state = agent_state_path(root, "engineer-1");
+        let notes = agent_notes_path(root, "engineer-1");
+        let dir = agent_state_dir(root);
+        assert!(state.starts_with(root));
+        assert!(notes.starts_with(root));
+        assert!(dir.starts_with(root));
+        assert_eq!(state.file_name().unwrap(), "engineer-1.json");
+        assert_eq!(notes.file_name().unwrap(), "notes.md");
+        assert!(
+            notes.parent().unwrap().ends_with("agent_state/engineer-1"),
+            "notes path should live inside per-agent subdir, got {}",
+            notes.display()
+        );
+    }
+
+    #[test]
+    fn bus_tick_path_uses_recipient_label() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let tick = bus_tick_path(root, "pm");
+        assert!(tick.starts_with(root));
+        assert_eq!(tick.file_name().unwrap(), "pm.tick");
+        assert!(tick.parent().unwrap().ends_with("bus-tick"));
     }
 
     #[test]

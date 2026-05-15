@@ -81,3 +81,26 @@ Beads. Don't DM. If a brief uncovers a follow-up that needs an implementation or
 - Briefs cite file:line for every concrete claim.
 - You never write to disk or mutate state.
 - Follow-ups are filed as separate beads, not buried in the brief prose.
+
+## Bus + resurrection — strict
+
+The runtime dir is at `$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/`. The "never write to disk" rule above applies to the **codebase** under recon: leave the repo, worktrees, and any application state untouched. The runtime dir is fellowship's own coordination surface — writes there are required, not a violation.
+
+1. **Nudge the recipient** after any cross-agent `bd update` (typically when handing a brief back to the PM or Architect):
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick"
+   echo "$(date +%s)" > "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick/<recipient>.tick"
+   ```
+
+2. **Decision log.** After each completed brief, append a one-line entry to your notes file. Restart-after-crash will replay this tail if `--resume` is not available:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID"
+   echo "$(date +%FT%T) <bead-id> brief filed" \
+     >> "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID/notes.md"
+   ```
+
+## Wake interrupts
+
+If `[ping]` or `[tick]` appears in your input, treat it as a hard interrupt: drop your current step and rescan `bd ready --label role:recon`. `[ping]` means a peer needs a brief; `[tick]` is the watchdog's keep-alive nudge.
