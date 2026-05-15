@@ -219,6 +219,31 @@ async fn run(
         }
     });
 
+    // Role-tiered keep-alive ticks. Idle agents on the bead bus would
+    // otherwise stop polling between watcher nudges; each tier fires
+    // `Event::RoleTick(role)` and the handler injects a `[tick]` line into
+    // those agents' PTYs unless they were recently nudged. Cadence lives on
+    // `Role::tick_period_secs` so the handler in app.rs uses the same value.
+    for role in [
+        fellowship::surface::Role::Engineer,
+        fellowship::surface::Role::Pm,
+        fellowship::surface::Role::Architect,
+        fellowship::surface::Role::Recon,
+    ] {
+        let tx = event_tx.clone();
+        let period = Duration::from_secs(role.tick_period_secs());
+        tokio::spawn(async move {
+            let mut interval = time::interval(period);
+            interval.tick().await; // skip the immediate tick
+            loop {
+                interval.tick().await;
+                if tx.send(Event::RoleTick(role)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
     // Background beads poll every 3 seconds. `bd` errors (e.g. not initialized
     // in the repo, binary missing) are logged once-per-failure-type and the
     // tick continues so a later `bd init` recovers without restarting.

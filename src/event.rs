@@ -2,7 +2,7 @@ use crate::beads::Bead;
 use crate::gh::PrInfo;
 use crate::git::{Diff, Worktree};
 use crate::runtime::{HeartbeatRecord, ReleaseRequest, SpawnRequest};
-use crate::surface::Surface;
+use crate::surface::{MemberId, Role, Surface};
 use crossterm::event::KeyEvent;
 use std::path::PathBuf;
 
@@ -26,6 +26,12 @@ pub enum Event {
     /// the warn/dead thresholds, and decides whether to restart, escalate,
     /// or do nothing.
     WatchdogTick,
+    /// Periodic tick driven by `main`'s role-tiered intervals (30 s engineer,
+    /// 60 s PM/Architect, 300 s Recon). The handler iterates live agents of
+    /// the carried role and injects `\n[tick] re-check beads\n` into each
+    /// PTY whose `last_nudge_at` is older than half the tier interval. Keeps
+    /// idle agents from going silent on the bead bus.
+    RoleTick(Role),
     /// Emitted by the runtime watcher when a `spawn-requests/<uuid>.json`
     /// intent file is written. The watcher consumes (deletes) the file
     /// before sending so the request is processed at-most-once.
@@ -36,6 +42,11 @@ pub enum Event {
     /// Emitted by the runtime watcher whenever `<runtime>/journal.ndjson`
     /// changes. Carries the full re-parsed list (cheaper than tracking deltas).
     JournalSnapshot(Vec<crate::runtime::JournalEntry>),
+    /// Emitted by the runtime watcher when a peer agent writes a tick file
+    /// under `<runtime>/bus-tick/<recipient>.tick`. Carries the recipient's
+    /// `MemberId`; the handler injects `\n[ping] bead updated\n` into that
+    /// member's PTY so the agent re-reads its assigned beads immediately.
+    AgentNudge(MemberId),
     /// Emitted by the beads poller every ~3s with the latest snapshot.
     BeadsRefreshed(Vec<Bead>),
     CreateWorktree(String),

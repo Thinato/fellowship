@@ -21,10 +21,27 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc::UnboundedSender;
+use uuid::Uuid;
 
 use crate::event::Event;
 use crate::panes::terminal::TerminalPane;
 use crate::surface::Role;
+
+/// Whether a spawn is starting a brand-new claude conversation or resuming an
+/// existing one after a crash. The carried UUID is the claude session id;
+/// fellowship generates it at fresh-spawn time so it knows the id without
+/// having to parse claude's banner output.
+#[derive(Debug, Clone, Copy)]
+pub enum SessionStrategy {
+    /// First spawn for this agent. UUID is freshly generated; claude receives
+    /// `--session-id <uuid>` so the resulting session is tagged with our id.
+    Fresh(Uuid),
+    /// Restart after a crash. UUID is the session id captured at the original
+    /// fresh spawn. Claude receives `-r <uuid>` to restore the full
+    /// conversation, including its system prompt — so we do NOT re-pass
+    /// `--append-system-prompt-file` here.
+    Resume(Uuid),
+}
 
 /// Markdown prompts baked into the binary at compile time. Updates to the
 /// `agents/<role>.md` files require a rebuild.
@@ -103,6 +120,7 @@ pub fn plan_for(
     agent_id: &str,
     claude_available: bool,
     prompt_path: &Path,
+    session: SessionStrategy,
 ) -> SpawnAction {
     let model = default_model_for(role);
 
@@ -111,6 +129,12 @@ pub fn plan_for(
         (
             "AGENT_PROMPT_FILE".to_string(),
             prompt_path.display().to_string(),
+        ),
+        (
+            "AGENT_SESSION_ID".to_string(),
+            match session {
+                SessionStrategy::Fresh(u) | SessionStrategy::Resume(u) => u.to_string(),
+            },
         ),
     ];
     if let Some(m) = model {
@@ -121,14 +145,19 @@ pub fn plan_for(
     // (paths under `~/.fellowship/` won't contain single quotes themselves).
     let prompt_path_quoted = shell_single_quote(&prompt_path.display().to_string());
     let leading = if claude_available {
-        if let Some(m) = model {
-            format!(
-                "claude --dangerously-skip-permissions --model {m} --append-system-prompt-file {prompt_path_quoted}"
-            )
-        } else {
-            format!(
-                "claude --dangerously-skip-permissions --append-system-prompt-file {prompt_path_quoted}"
-            )
+        // The model flag (Recon → haiku) is independent of session strategy.
+        let model_flag = model.map(|m| format!(" --model {m}")).unwrap_or_default();
+        match session {
+            SessionStrategy::Fresh(uuid) => format!(
+                "claude --session-id {uuid} --dangerously-skip-permissions{model_flag} --append-system-prompt-file {prompt_path_quoted}"
+            ),
+            // Resume keeps --dangerously-skip-permissions (it's a per-invocation
+            // safety mode, not a session property) and the model flag, but skips
+            // the system-prompt re-append because the resumed conversation
+            // already carries it.
+            SessionStrategy::Resume(uuid) => {
+                format!("claude --dangerously-skip-permissions{model_flag} -r {uuid}")
+            }
         }
     } else {
         format!(
@@ -220,6 +249,31 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn live_agent_prompts_carry_bus_and_resurrection_fragment() {
+        // PM/Architect/Recon/Engineer are live LLM agents; Orchestrator is
+        // native (Phase 12) so its prompt file is intentionally not updated.
+        for role in [Role::Pm, Role::Architect, Role::Recon, Role::Engineer] {
+            let p = prompt_for(role);
+            assert!(
+                p.contains("bus-tick"),
+                "{role:?} prompt missing bus-tick fragment"
+            );
+            assert!(
+                p.contains("agent_state"),
+                "{role:?} prompt missing notes.md / agent_state fragment"
+            );
+            assert!(
+                p.contains("[ping]"),
+                "{role:?} prompt missing [ping] interrupt instruction"
+            );
+            assert!(
+                p.contains("[tick]"),
+                "{role:?} prompt missing [tick] interrupt instruction"
+            );
+        }
+    }
+
+    #[test]
     fn prompt_for_returns_non_empty_for_every_role() {
         for role in [
             Role::Pm,
@@ -261,6 +315,10 @@ mod tests {
         }
     }
 
+    fn fresh() -> SessionStrategy {
+        SessionStrategy::Fresh(Uuid::nil())
+    }
+
     #[test]
     fn plan_with_claude_available_runs_claude_then_drops_to_interactive_shell() {
         let action = plan_for(
@@ -268,12 +326,18 @@ mod tests {
             "pm",
             true,
             Path::new("/tmp/fellowship-test/prompts/pm.md"),
+            fresh(),
+        );
+        assert!(
+            action.command_line.starts_with("claude --session-id "),
+            "got: {}",
+            action.command_line
         );
         assert!(
             action
                 .command_line
-                .starts_with("claude --dangerously-skip-permissions"),
-            "got: {}",
+                .contains("--dangerously-skip-permissions"),
+            "missing dangerous flag: {}",
             action.command_line
         );
         assert!(
@@ -301,12 +365,19 @@ mod tests {
             .collect();
         assert_eq!(env.get("AGENT_ID"), Some(&"pm"));
         assert!(env.contains_key("AGENT_PROMPT_FILE"));
+        assert!(env.contains_key("AGENT_SESSION_ID"));
         assert!(!env.contains_key("AGENT_MODEL"));
     }
 
     #[test]
     fn plan_for_recon_passes_haiku_model_in_command_and_env() {
-        let action = plan_for(Role::Recon, "recon", true, Path::new("/tmp/x/recon.md"));
+        let action = plan_for(
+            Role::Recon,
+            "recon",
+            true,
+            Path::new("/tmp/x/recon.md"),
+            fresh(),
+        );
         assert!(action.command_line.contains("--model claude-haiku-4-5"));
         let env: std::collections::HashMap<_, _> = action
             .env
@@ -323,6 +394,7 @@ mod tests {
             "engineer-1",
             false,
             Path::new("/tmp/x/engineer.md"),
+            fresh(),
         );
         assert!(action.command_line.contains("claude not on PATH"));
         assert!(action.command_line.contains("/tmp/x/engineer.md"));
@@ -342,6 +414,7 @@ mod tests {
             "engineer-7",
             true,
             Path::new("/tmp/x/engineer.md"),
+            fresh(),
         );
         let env: std::collections::HashMap<_, _> = action
             .env
@@ -349,6 +422,73 @@ mod tests {
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect();
         assert_eq!(env.get("AGENT_ID"), Some(&"engineer-7"));
+    }
+
+    #[test]
+    fn fresh_strategy_passes_uuid_via_session_id_flag() {
+        let uuid = Uuid::new_v4();
+        let action = plan_for(
+            Role::Engineer,
+            "engineer-1",
+            true,
+            Path::new("/tmp/x/engineer.md"),
+            SessionStrategy::Fresh(uuid),
+        );
+        assert!(
+            action
+                .command_line
+                .contains(&format!("--session-id {uuid}")),
+            "missing --session-id <uuid>: {}",
+            action.command_line
+        );
+        assert!(
+            !action.command_line.contains(" -r "),
+            "fresh spawn must not pass -r: {}",
+            action.command_line
+        );
+        let env: std::collections::HashMap<_, _> = action
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            env.get("AGENT_SESSION_ID").map(|s| s.to_string()),
+            Some(uuid.to_string())
+        );
+    }
+
+    #[test]
+    fn resume_strategy_passes_uuid_via_dash_r_and_omits_system_prompt() {
+        let uuid = Uuid::new_v4();
+        let action = plan_for(
+            Role::Pm,
+            "pm",
+            true,
+            Path::new("/tmp/x/pm.md"),
+            SessionStrategy::Resume(uuid),
+        );
+        assert!(
+            action.command_line.contains(&format!(" -r {uuid}")),
+            "missing -r <uuid>: {}",
+            action.command_line
+        );
+        assert!(
+            !action.command_line.contains("--session-id"),
+            "resume must not set --session-id: {}",
+            action.command_line
+        );
+        assert!(
+            !action.command_line.contains("--append-system-prompt-file"),
+            "resume must not re-append system prompt: {}",
+            action.command_line
+        );
+        assert!(
+            action
+                .command_line
+                .contains("--dangerously-skip-permissions"),
+            "resume should still pass dangerous flag: {}",
+            action.command_line
+        );
     }
 
     #[test]

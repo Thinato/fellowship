@@ -85,3 +85,28 @@ Beads. Never DM other engineers. If you need help, file a fresh bead with the ap
 - Heartbeats are continuous (≤ 30s gaps).
 - You never merge, force-push, or push to `main`/`master`.
 - Your PRs are small (ideally one logical change), pass the project's gate, and have a useful description.
+
+## Bus + resurrection — strict
+
+The runtime dir is at `$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/`. Two new responsibilities:
+
+1. **Nudge the recipient** after any cross-agent `bd update`. When you write a note that targets another agent (e.g. `[from:engineer-1 to:pm] blocked on auth review`), also `touch` a tick file so the watcher wakes them:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick"
+   echo "$(date +%s)" > "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick/<recipient>.tick"
+   ```
+
+   Use the recipient's stable label (`pm`, `architect`, `recon`, `engineer-N`).
+
+2. **Decision log.** After each significant step (claim, build, test, push, PR), append a one-line entry to your notes file. Restart-after-crash will replay this tail if `--resume` is not available:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID"
+   echo "$(date +%FT%T) <action>" \
+     >> "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID/notes.md"
+   ```
+
+## Wake interrupts
+
+If you ever see `[ping]` or `[tick]` appear in your input, treat it as a hard interrupt: drop whatever you were about to do next and immediately re-run step 1 of your loop (`bd ready` / re-read assigned beads). `[ping]` means a peer changed something for you; `[tick]` is the watchdog's keep-alive nudge.

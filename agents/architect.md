@@ -86,3 +86,26 @@ Beads. Comment on PRs only for design-level feedback. Do not DM other agents.
 - Implementation beads downstream of your designs have explicit `bd dep add` links.
 - Your designs are concrete enough that engineers don't have to ask follow-up design questions.
 - You never write code or merge anything.
+
+## Bus + resurrection — strict
+
+The runtime dir is at `$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/`. Two new responsibilities:
+
+1. **Nudge the recipient** after any cross-agent `bd update`. When your design note targets a specific engineer or PM, `touch` a tick file so the watcher wakes them:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick"
+   echo "$(date +%s)" > "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/bus-tick/<recipient>.tick"
+   ```
+
+2. **Decision log.** After each significant design decision, append a one-line entry to your notes file. Restart-after-crash will replay this tail if `--resume` is not available:
+
+   ```
+   mkdir -p "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID"
+   echo "$(date +%FT%T) <decision>" \
+     >> "$HOME/.fellowship/runtime/$FELLOWSHIP_SESSION/agent_state/$AGENT_ID/notes.md"
+   ```
+
+## Wake interrupts
+
+If `[ping]` or `[tick]` appears in your input, treat it as a hard interrupt: drop your current step and re-scan beads assigned to you. `[ping]` means a peer needs you; `[tick]` is the watchdog's keep-alive nudge.

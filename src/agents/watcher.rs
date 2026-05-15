@@ -12,9 +12,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::Event;
 use crate::runtime::{
-    HeartbeatRecord, JOURNAL_FILE, RELEASE_REQUEST_DIR, ReleaseRequest, SPAWN_REQUEST_DIR,
-    STATE_DIR, SpawnRequest, journal_path, read_journal,
+    BUS_TICK_DIR, HeartbeatRecord, JOURNAL_FILE, RELEASE_REQUEST_DIR, ReleaseRequest,
+    SPAWN_REQUEST_DIR, STATE_DIR, SpawnRequest, journal_path, read_journal,
 };
+use crate::surface::{MemberId, Role};
 
 /// Spawn a notify watcher rooted at `runtime_root`. Watches:
 /// - `<runtime_root>/state/` — heartbeats → `Event::AgentHeartbeat`.
@@ -34,9 +35,14 @@ pub fn spawn_runtime_watcher(
     let state_dir = runtime_root.join(STATE_DIR);
     let spawn_dir = runtime_root.join(SPAWN_REQUEST_DIR);
     let release_dir = runtime_root.join(RELEASE_REQUEST_DIR);
-    for d in [&state_dir, &spawn_dir, &release_dir] {
+    let bus_tick_dir = runtime_root.join(BUS_TICK_DIR);
+    for d in [&state_dir, &spawn_dir, &release_dir, &bus_tick_dir] {
         std::fs::create_dir_all(d).with_context(|| format!("mkdir -p {}", d.display()))?;
     }
+    // Prune bus-tick files older than 10 minutes. Stale ticks left over from
+    // a prior crash would otherwise fire AgentNudge storms on the next watcher
+    // boot. Best-effort; failures here are logged-and-ignored.
+    prune_stale_bus_ticks(&bus_tick_dir, std::time::Duration::from_secs(600));
     // Touch the journal file so notify has something to watch from t=0.
     let journal = journal_path(runtime_root);
     if !journal.exists() {
@@ -46,6 +52,7 @@ pub fn spawn_runtime_watcher(
     let runtime_root_owned = runtime_root.to_path_buf();
     let spawn_dir_owned = spawn_dir.clone();
     let release_dir_owned = release_dir.clone();
+    let bus_tick_dir_owned = bus_tick_dir.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<NotifyEvent>| {
         let Ok(event) = res else { return };
         if !matches!(
@@ -59,6 +66,15 @@ pub fn spawn_runtime_watcher(
             if path.ends_with(JOURNAL_FILE) {
                 journal_dirty = true;
                 continue;
+            }
+            // Bus-tick files use `.tick` extension. Handle them before the
+            // is_json_file gate so a fast-path emit doesn't require parsing.
+            if path.starts_with(&bus_tick_dir_owned)
+                && path.extension().and_then(|s| s.to_str()) == Some("tick")
+                && let Some(member) = parse_member_label_from_tick_path(path)
+                && tx.send(Event::AgentNudge(member)).is_err()
+            {
+                return;
             }
             if !is_json_file(path) {
                 continue;
@@ -102,8 +118,30 @@ pub fn spawn_runtime_watcher(
     watcher
         .watch(&release_dir, RecursiveMode::NonRecursive)
         .with_context(|| format!("watching {}", release_dir.display()))?;
+    watcher
+        .watch(&bus_tick_dir, RecursiveMode::NonRecursive)
+        .with_context(|| format!("watching {}", bus_tick_dir.display()))?;
 
     Ok(watcher)
+}
+
+/// Parse a tick filename like `engineer-1.tick`, `pm.tick`, `architect.tick`
+/// back into a `MemberId`. Returns `None` for unknown role labels so the
+/// watcher silently drops stray files (e.g. accidental touches).
+fn parse_member_label_from_tick_path(path: &Path) -> Option<MemberId> {
+    let stem = path.file_stem().and_then(|s| s.to_str())?;
+    if let Some(rest) = stem.strip_prefix("engineer-") {
+        let n: u32 = rest.parse().ok()?;
+        return Some(MemberId::engineer(n));
+    }
+    let role = match stem {
+        "pm" => Role::Pm,
+        "architect" => Role::Architect,
+        "recon" => Role::Recon,
+        "orchestrator" => Role::Orchestrator,
+        _ => return None,
+    };
+    Some(MemberId::singleton(role))
 }
 
 /// Read + delete a spawn-request file in one shot. Returns the parsed request
@@ -126,6 +164,30 @@ fn consume_release_request(path: &Path) -> Option<ReleaseRequest> {
 
 fn is_json_file(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("json")
+}
+
+fn prune_stale_bus_ticks(dir: &Path, max_age: std::time::Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("tick") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if now
+            .duration_since(modified)
+            .map(|age| age > max_age)
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 fn read_heartbeat(path: &Path) -> Option<HeartbeatRecord> {
@@ -165,5 +227,33 @@ mod tests {
         assert!(is_json_file(&PathBuf::from("/x/pm.json")));
         assert!(!is_json_file(&PathBuf::from("/x/pm.txt")));
         assert!(!is_json_file(&PathBuf::from("/x/pm")));
+    }
+
+    #[test]
+    fn parse_tick_path_round_trips_singleton_and_engineer_labels() {
+        let pm =
+            parse_member_label_from_tick_path(&PathBuf::from("/runtime/bus-tick/pm.tick")).unwrap();
+        assert_eq!(pm, MemberId::singleton(Role::Pm));
+
+        let arch =
+            parse_member_label_from_tick_path(&PathBuf::from("/runtime/bus-tick/architect.tick"))
+                .unwrap();
+        assert_eq!(arch, MemberId::singleton(Role::Architect));
+
+        let eng1 =
+            parse_member_label_from_tick_path(&PathBuf::from("/runtime/bus-tick/engineer-1.tick"))
+                .unwrap();
+        assert_eq!(eng1, MemberId::engineer(1));
+
+        let eng42 =
+            parse_member_label_from_tick_path(&PathBuf::from("/runtime/bus-tick/engineer-42.tick"))
+                .unwrap();
+        assert_eq!(eng42, MemberId::engineer(42));
+
+        // Stray files silently dropped.
+        assert!(parse_member_label_from_tick_path(&PathBuf::from("/x/junk.tick")).is_none());
+        assert!(
+            parse_member_label_from_tick_path(&PathBuf::from("/x/engineer-NaN.tick")).is_none()
+        );
     }
 }

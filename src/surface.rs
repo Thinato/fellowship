@@ -21,6 +21,22 @@ impl Role {
             Role::Engineer => "engineer",
         }
     }
+
+    /// Cadence at which `main` fires `Event::RoleTick(self)` to nudge idle
+    /// agents on the bus. Single source of truth shared by the interval
+    /// spawner and the event handler (the handler uses half this value as
+    /// its "was nudged recently" gate). Per the agent-comms-resurrection
+    /// plan: Engineer 30 s, PM/Architect 60 s, Recon 300 s.
+    pub fn tick_period_secs(&self) -> u64 {
+        match self {
+            Role::Engineer => 30,
+            Role::Pm | Role::Architect => 60,
+            Role::Recon => 300,
+            // Orchestrator is a native task (Phase 12), not an LLM PTY; this
+            // value is unused but kept for exhaustiveness.
+            Role::Orchestrator => 60,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
